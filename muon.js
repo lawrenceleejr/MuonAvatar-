@@ -249,14 +249,14 @@
   // lid/low: upper and lower eyelid cover (0–1); tilt: lid slant (+ = inner corner down);
   // browY: brow lift (px); browA: brow slant (+ = angry); asym: extra lift on one brow.
   const MOODS = {
-    normal:     { lid: 0.16, tilt: 0,     low: 0,    browY: 0,   browA: 0.05,  pupil: 1,    size: 1,    asym: 0 },
-    happy:      { lid: 0.04, tilt: -0.05, low: 0.56, browY: 5,   browA: -0.15, pupil: 1.05, size: 1.02, asym: 0 },
-    surprised:  { lid: 0,    tilt: 0,     low: 0,    browY: 12,  browA: -0.08, pupil: 0.6,  size: 1.18, asym: 0 },
-    determined: { lid: 0.38, tilt: 0.4,   low: 0.2,  browY: -4,  browA: 0.55,  pupil: 0.85, size: 0.95, asym: 0 },
-    sleepy:     { lid: 0.56, tilt: -0.1,  low: 0.12, browY: -2,  browA: -0.1,  pupil: 0.95, size: 0.98, asym: 0 },
-    sad:        { lid: 0.3,  tilt: -0.34, low: 0,    browY: 3,   browA: -0.5,  pupil: 1.18, size: 1,    asym: 0 },
-    smug:       { lid: 0.44, tilt: 0.04,  low: 0.26, browY: 0,   browA: 0.12,  pupil: 0.9,  size: 1,    asym: 9 },
-    dizzy:      { lid: 0.12, tilt: 0,     low: 0,    browY: 6,   browA: -0.3,  pupil: 1,    size: 1.05, asym: 0 },
+    normal:     { lid: 0.16, tilt: 0,     low: 0,    browY: 0,   browA: 0.05,  pupil: 1,    size: 1,    asym: 0, omega: 9 },
+    happy:      { lid: 0.04, tilt: -0.05, low: 0.56, browY: 5,   browA: -0.15, pupil: 1.05, size: 1.02, asym: 0, omega: 15 },
+    surprised:  { lid: 0,    tilt: 0,     low: 0,    browY: 12,  browA: -0.08, pupil: 0.6,  size: 1.18, asym: 0, omega: 12 },
+    determined: { lid: 0.38, tilt: 0.4,   low: 0.2,  browY: -4,  browA: 0.55,  pupil: 0.85, size: 0.95, asym: 0, omega: 13 },
+    sleepy:     { lid: 0.56, tilt: -0.1,  low: 0.12, browY: -2,  browA: -0.1,  pupil: 0.95, size: 0.98, asym: 0, omega: 4.5 },
+    sad:        { lid: 0.3,  tilt: -0.34, low: 0,    browY: 3,   browA: -0.5,  pupil: 1.18, size: 1,    asym: 0, omega: 6 },
+    smug:       { lid: 0.44, tilt: 0.04,  low: 0.26, browY: 0,   browA: 0.12,  pupil: 0.9,  size: 1,    asym: 9, omega: 8 },
+    dizzy:      { lid: 0.12, tilt: 0,     low: 0,    browY: 6,   browA: -0.3,  pupil: 1,    size: 1.05, asym: 0, omega: 18 },
   };
 
   // ------------------------------------------------------------------ one muon
@@ -264,7 +264,7 @@
     constructor(name, sign, color) {
       this.name = name; this.sign = sign; this.color = color;
       this.u = 0.5; this.vel = 0; this.target = null; this.maxSpeed = 0.22; this.accel = 6;
-      this.dir = 1; this.lean = 0; this.leanV = 0;
+      this.dir = 1; this.lean = 0; this.leanV = 0; this.spin = 0; this.flip = null; this.crouch = false; this.bob = 0;
       this.amp = 0; this.sigma = 34; this.k = 0.19; this.omega = 9; this.phase = rand(0, TAU);
       this.eye = 0; this.eyeLift = 0; this.blink = 0; this.nextBlink = rand(1, 3);
       this.sx = 1; this.sy = 1; this.svx = 0; this.svy = 0;
@@ -377,6 +377,12 @@
       this.mu.forEach(m => {
         if (!m.alive) return;
         m.svy += 4;
+        if (!m.airborne && !m.crouch) {
+          m.airborne = true; m.jumpV = 260; m.sy = 1.25;
+          const was = m.mood; m.mood = 'surprised';
+          this.clock.wait(0.7).then(() => { if (m.mood === 'surprised') m.mood = was === 'surprised' ? 'normal' : 'happy'; })
+            .then(() => this.clock.wait(0.8)).then(() => { if (m.mood === 'happy') m.mood = 'normal'; });
+        }
         const av = SHAPES[name].avoid;
         if (av && m.u > av[0] && m.u < av[1]) { m.target = this.offGlyph(m.u); m.maxSpeed = 0.5; }
       });
@@ -419,16 +425,26 @@
     }
 
     moveTo(m, u, speed = 0.22) {
+      // lean back before setting off, like winding up
+      if (Math.abs(u - m.u) > 0.03 && Math.abs(m.vel) < 0.05) m.leanV -= Math.sign(u - m.u) * 7;
       m.target = u; m.maxSpeed = speed;
       return this.until(() => !m.alive || (Math.abs(m.target - m.u) < 0.004 && Math.abs(m.vel) < 0.03));
     }
 
-    hopOnce(m, h = 1) {
-      if (!m.alive || m.airborne) return Promise.resolve();
-      m.airborne = true; m.jumpV = 330 * h; m.sx = 1.15; m.sy = 0.75; m.svy = 6;
-      m.amp *= 1.0;
-      this.tween(m, { amp: 52 }, 0.15, Ease.out).then(() => this.tween(m, { amp: 34 }, 0.6, Ease.outElastic));
-      return this.until(() => !m.airborne);
+    async hopOnce(m, h = 1, flip = false) {
+      if (!m.alive || m.airborne || m.crouch) return;
+      // anticipation: crouch into the line first
+      m.crouch = true; m.sx = 1.3; m.sy = 0.68; m.svx = m.svy = 0;
+      await this.tween(m, { amp: 20 }, 0.13, Ease.out);
+      m.crouch = false;
+      m.airborne = true; m.jumpV = 370 * h; m.sx = 0.8; m.sy = 1.32;
+      if (flip) m.flip = { t: 0, dur: 0.32 + 0.12 * h, dir: m.dir || 1 };
+      this.tween(m, { amp: 58 }, 0.12, Ease.out).then(() => this.tween(m, { amp: 34 }, 0.75, Ease.outElastic));
+      await this.until(() => !m.airborne);
+    }
+
+    async shimmy(m, n = 4) {
+      for (let i = 0; i < n; i++) { m.leanV += (i % 2 ? 1 : -1) * 11; m.svx += 3; await this.wait(0.13); }
     }
 
     async speak(m, id) {
@@ -492,8 +508,16 @@
       const loops = this.mu.filter(m => m.alive).map(m => (async () => {
         for (;;) {
           const r = rnd();
-          if (r < 0.2) { await g(this.hopOnce(m, rand(0.7, 1.2))); }
-          else if (r < 0.32) { m.mood = 'happy'; await g(this.wait(rand(0.6, 1.2))); m.mood = 'normal'; }
+          if (r < 0.12) { await g(this.hopOnce(m, rand(0.7, 1.2))); }
+          else if (r < 0.2) { m.mood = 'happy'; await g(this.hopOnce(m, 1.35, true)); await g(this.wait(0.5)); m.mood = 'normal'; }
+          else if (r < 0.27) { m.mood = 'happy'; await g(this.shimmy(m, 6)); m.mood = 'normal'; }
+          else if (r < 0.33) {
+            m.mood = 'surprised'; m.lookAt = { x: 0, y: -1 }; await g(this.wait(0.5));
+            m.lookAt = { x: -1, y: -0.2 }; await g(this.wait(0.35)); m.lookAt = { x: 1, y: -0.2 }; await g(this.wait(0.35));
+            m.lookAt = null; m.mood = 'normal';
+          }
+          else if (r < 0.39) { m.mood = 'happy'; for (let i = 0; i < 3; i++) await g(this.hopOnce(m, 0.45)); m.mood = 'normal'; }
+          else if (r < 0.43) { m.mood = 'sleepy'; await g(this.wait(rand(1, 1.8))); m.mood = 'surprised'; await g(this.shimmy(m, 4)); m.mood = 'normal'; }
           else {
             let tgt = this.closed ? m.u + rand(-0.6, 0.6) : rand(0.08, 0.92);
             tgt = this.offGlyph(tgt);
@@ -670,6 +694,19 @@
         const s = p.width / DW;
         this.mouse = (p.mouseX >= 0 && p.mouseY >= 0 && p.mouseX <= p.width && p.mouseY <= p.height) ? { x: p.mouseX / s, y: p.mouseY / s } : null;
       };
+      p.mousePressed = () => {
+        const s = p.width / DW;
+        if (p.mouseX < 0 || p.mouseY < 0 || p.mouseX > p.width || p.mouseY > p.height) return;
+        this.voice.unlock();
+        this.mu.forEach(m => {
+          if (!m.alive) return;
+          const a = this.anchor(m);
+          if (Math.hypot(p.mouseX / s - a.x, p.mouseY / s - a.y) > 55) return;
+          const was = m.mood;
+          m.mood = 'happy';
+          this.hopOnce(m, 1.3, true).then(() => this.clock.wait(0.6)).then(() => { if (m.mood === 'happy') m.mood = was === 'happy' ? 'normal' : was; });
+        });
+      };
       p.draw = () => {
         const dt = this.o.capture ? 1 / (this.o.capture.fps || 30) : Math.min(0.05, p.deltaTime / 1000 || 1 / 60);
         this.update(dt);
@@ -741,7 +778,7 @@
         m.leanV += ((leanTo - m.lean) * 70 - m.leanV * 6) * dt;
         m.lean = clamp(m.lean + m.leanV * dt, -0.85, 0.85);
         // the packet rolls: phase follows travel, plus its own beat
-        m.phase += m.omega * dt + m.vel * L * m.k * dt * 0.6;
+        m.phase += m.ex.omega * dt + m.vel * L * m.k * dt * 0.6;
 
         // jump
         if (m.airborne || m.jump > 0) {
@@ -750,6 +787,12 @@
             m.jump = 0; m.jumpV = 0;
             if (m.airborne) { m.airborne = false; m.sx = 1.25; m.sy = 0.7; this.ripple(this.pos(m), 6, 1.0, 0.09); }
           }
+        }
+        if (m.flip) {
+          m.flip.t += dt;
+          const q = clamp(m.flip.t / m.flip.dur, 0, 1);
+          m.spin = m.flip.dir * TAU * Ease.inOut(q);
+          if (q >= 1) { m.spin = 0; m.flip = null; }
         }
         // squash & stretch springs
         const kS = 180, dS = 11;
@@ -790,6 +833,7 @@
           let tgt = pose[k];
           if (k === 'browY') tgt += m.rms * 90 + (m.airborne ? 4 : 0);
           if (k === 'size') tgt += m.rms * 0.5;
+          if (k === 'omega') { m.ex[k] += (tgt - m.ex[k]) * Math.min(1, dt * 3); continue; }
           m.exv[k] += ((tgt - m.ex[k]) * 160 - m.exv[k] * 13) * dt;
           m.ex[k] += m.exv[k] * dt;
         }
@@ -817,7 +861,8 @@
         const reach = 4 * m.sigma * (1 + 0.62 * Math.abs(m.lean)) + Math.abs(off);
         const w = m.win;
         const G = this.o.speechGain * m.talk;
-        const A = m.amp * (1 - 0.35 * m.talk);
+        const breath = 1 + 0.09 * Math.sin(this.t * 2.2 + m.sign);
+        const A = m.amp * (1 - 0.35 * m.talk) * breath * (1 + m.rms * 2);
         for (let i = 0; i < N; i++) {
           let ds = B.S[i] - s0;
           if (this.closed) ds = mod(ds + L / 2, L) - L / 2;
@@ -836,6 +881,9 @@
           B.D[i] += gsn * d;
           if (gsn > B.W[i]) { B.W[i] = gsn; B.C[i] = mi; }
         }
+        // the eyes sit on the packet and bob with it, softened so they don't buzz
+        const ic = clamp(Math.round(mod(s0 / L, 1) * (N - 1)), 0, N - 1);
+        m.bob = (m.bob || 0) + (B.D[ic] * 0.3 - (m.bob || 0)) * Math.min(1, dt * 9);
       });
     }
 
@@ -847,7 +895,7 @@
       const f = u * (N - 1), i = Math.min(N - 2, f | 0), fr = f - i;
       const x = lerp(B.bx[i], B.bx[i + 1], fr), y = lerp(B.by[i], B.by[i + 1], fr);
       const nx = lerp(B.nx[i], B.nx[i + 1], fr), ny = lerp(B.ny[i], B.ny[i + 1], fr);
-      const lift = m.amp * 1.05 + 20 + m.jump + m.rms * 40;
+      const lift = m.amp * 0.42 + (m.bob || 0) + m.jump + m.rms * 30;
       return { x: x + nx * lift, y: y + ny * lift, nx, ny, bx: x, by: y };
     }
 
@@ -945,13 +993,14 @@
       const lean = m.lean * 0.4;                               // lean with the packet, slosh included
       p.push();
       p.translate(a.x, a.y + bob);
-      p.rotate(clamp(-up * 0.45, -0.5, 0.5) + lean);
-      p.scale(m.eye * m.sx, m.eye * m.sy);
+      p.rotate(clamp(-up * 0.85, -0.95, 0.95) + lean + (m.spin || 0));
+      const st = Math.abs(m.lean);
+      p.scale(m.eye * m.sx * (1 + st * 0.14), m.eye * m.sy * (1 - st * 0.08));
       const ctx = p.drawingContext;
       const tb = Math.floor(t * this.o.boilFps);
       const paper = c.paper, ink = c.ink;
       const lidCol = p.lerpColor(p.color(paper), p.color(c[m.color]), 0.55).toString();
-      const R = 12.5, gap = 16.5 + Math.abs(m.lean) * 3;
+      const R = 13.5, gap = 17 + Math.abs(m.lean) * 3;
       for (const side of [-1, 1]) {
         // the leading eye is a touch bigger, and the two are never quite identical
         const lead = 1 + 0.1 * side * m.lean;
@@ -1037,9 +1086,9 @@
         p.noStroke(); p.fill(col);
         p.textFont(c.family); p.textStyle(p.ITALIC); p.textSize(19);
         const cx = clamp(a.x, 170, DW - 170);
-        const above = a.y > 90;
+        const above = a.y > 110;
         p.textAlign(p.CENTER, above ? p.BOTTOM : p.TOP);
-        p.text(m.captionQuote === false ? m.caption : '“' + m.caption + '”', cx, above ? a.y - 30 - 6 * m.captionA : a.y + 40);
+        p.text(m.captionQuote === false ? m.caption : '“' + m.caption + '”', cx, above ? a.y - 50 - 6 * m.captionA : a.y + 40);
       }
     }
   }
