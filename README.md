@@ -47,7 +47,7 @@ CSS custom properties on the container, so the mascot picks up your site's palet
 
 Options for `mount`: `lowpass` (Hz, default 420), `speechGain` (1), `speechWindow` (ms of
 speech across the packet, 40), `pitch` (voice playback rate, 1), `carrier` (k, 0.19), `fps` (drawings per second, 12), `wobble`,
-`boilFps` and `inkWeight` (the hand-drawn line), `captions`, `autoBirth`, `background`, `seed`,
+`boilFps` and `inkWeight` (the hand-drawn line, default 6.5), `captions`, `autoBirth`, `background`, `seed`,
 `colors` (an object that overrides the CSS properties).
 
 Browsers only play sound after the visitor interacts with the page, so call `say`, `ride` or

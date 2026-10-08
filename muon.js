@@ -294,7 +294,7 @@
         fps: 12,               // drawings per second; motion is simulated smoothly but shown held, like cel animation
         wobble: 3.2,           // hand-drawn line: jitter (design px)
         boilFps: null,         // how often the wobble is redrawn; defaults to fps (a new drawing every frame)
-        inkWeight: 3.4,        // marker weight (design px)
+        inkWeight: 6.5,        // marker weight (design px)
         capture: null,         // { fps } renders on demand for video; see tools/render_videos.js
         background: null,      // fill colour; null keeps the canvas transparent
         seed: 7,
@@ -951,16 +951,16 @@
           if (prev) {
             const f = (sv - s0) / Math.max(1, s1 - s0);
             const ends = seamless ? 1 : Math.pow(clamp(Math.min(sv - sLo, sHi - sv) / 30, 0.15, 1), 0.6);
-            const press = (0.55 + 0.5 * Math.sin(Math.PI * f)) * (0.8 + 0.5 * p.noise(sv * 0.01 + 40, tb * 0.9));
+            const press = (0.75 + 0.3 * Math.sin(Math.PI * f)) * (0.88 + 0.25 * p.noise(sv * 0.01 + 40, tb * 0.9));
             ctx.strokeStyle = colorAt(i, 1);
-            ctx.lineWidth = this.o.inkWeight * press * ends * (1 + 0.45 * B.W[i]);
+            ctx.lineWidth = this.o.inkWeight * press * ends * (1 + 0.15 * B.W[i]);
             ctx.beginPath(); ctx.moveTo(prev[0], prev[1]); ctx.lineTo(q[0], q[1]); ctx.stroke();
           }
           prev = q;
         }
       }
       // a quick second pass, lighter and looser, as if the line was gone over again
-      ctx.lineWidth = 1.1;
+      ctx.lineWidth = 1.6;
       let prev2 = null;
       for (let i = 0; i < N; i += B.W[i] > 0.05 ? 1 : STEP) {
         const sv = B.S[i];
@@ -1016,7 +1016,7 @@
       const ctx = p.drawingContext;
       const tb = Math.floor(t * (this.o.boilFps || this.o.fps || 12));
       const paper = c.paper, ink = c.ink;
-      const lidCol = p.lerpColor(p.color(paper), p.color(c[m.color]), 0.55).toString();
+      const lidCol = paper;
       const R = 13.5, gap = 17 + Math.abs(m.lean) * 3;
       for (const side of [-1, 1]) {
         // the leading eye is a touch bigger, and the two are never quite identical
@@ -1039,9 +1039,8 @@
           if (open) { const e = pts[0]; path.lineTo(e[0] + open, e[1] - open * 0.6); } else path.closePath();
           return path;
         };
-        const eyePath = lumpy(0, 0.32);
-        const reg = (p.noise(side * 9, tb * 5.1) - 0.5) * 3;   // fills print slightly off-register
-        ctx.save(); ctx.translate(reg, -reg * 0.6); ctx.fillStyle = paper; ctx.fill(eyePath); ctx.restore();
+        const eyePath = lumpy(0, 0.14);
+        ctx.fillStyle = paper; ctx.fill(eyePath);
         ctx.save();
         ctx.clip(eyePath);
         // pupil
@@ -1056,17 +1055,10 @@
           const pr = rx * 0.56 * ex.pupil;
           // a slight inward pull when looking close makes the gaze feel focused
           const px = m.look.x * (rx - pr * 0.75) - side * 0.6, py = m.look.y * (ry - pr * 0.8);
-          ctx.fillStyle = ink; ctx.beginPath();
-          for (let q = 0; q <= 7; q++) {
-            const th = (q / 7) * TAU, w = pr * (1 + (p.noise(q * 1.3 + side * 4, tb * 2.7) - 0.5) * 0.35);
-            q ? ctx.lineTo(px + Math.cos(th) * w, py + Math.sin(th) * w) : ctx.moveTo(px + w, py);
-          }
-          ctx.fill();
-          ctx.fillStyle = paper;
-          ctx.beginPath(); ctx.arc(px + pr * 0.34, py - pr * 0.4, pr * 0.32, 0, TAU); ctx.fill();
-          ctx.beginPath(); ctx.arc(px - pr * 0.32, py + pr * 0.36, pr * 0.13, 0, TAU); ctx.fill();
+          ctx.fillStyle = ink; ctx.beginPath(); ctx.arc(px, py, pr, 0, TAU); ctx.fill();
+          ctx.fillStyle = paper; ctx.beginPath(); ctx.arc(px + pr * 0.35, py - pr * 0.38, pr * 0.3, 0, TAU); ctx.fill();
         }
-        ctx.strokeStyle = ink; ctx.lineWidth = 1.8; ctx.fillStyle = lidCol;
+        ctx.strokeStyle = ink; ctx.lineWidth = 2.6; ctx.fillStyle = lidCol;
         // upper lid: sweeps down to blink, slants with the mood
         const wink = side > 0 ? m.wink : 0;
         const lid = Math.max(ex.lid, m.blink, wink);
@@ -1091,8 +1083,7 @@
           ctx.fill(); ctx.stroke();
         }
         ctx.restore();
-        ctx.strokeStyle = ink; ctx.lineWidth = 2.4; ctx.stroke(eyePath);
-        ctx.lineWidth = 1; ctx.stroke(lumpy(0.7, 0.42, 8, 2.5));   // traced twice, not quite on top
+        ctx.strokeStyle = ink; ctx.lineWidth = 3.2; ctx.stroke(eyePath);
         // brow: a tapered stroke that lifts with loud syllables
         const by = -ry - 7 - ex.browY - (side > 0 ? ex.asym : 0);
         ctx.save();
@@ -1103,7 +1094,7 @@
         ctx.fillStyle = ink;
         ctx.beginPath();
         ctx.moveTo(-bw, 1 + jy);
-        ctx.quadraticCurveTo(0, -arch - 2.2, bw, 1 - jy);
+        ctx.quadraticCurveTo(0, -arch - 3.4, bw, 1 - jy);
         ctx.quadraticCurveTo(0, -arch + 1.4, -bw, 1 + jy);
         ctx.fill();
         ctx.restore();
