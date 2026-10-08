@@ -99,11 +99,12 @@
     },
     mu: {
       // the letter μ, written in one stroke
+      // repeated points make sharp corners, so stems are drawn down-and-back like a pen would
       pts: catmull([
-        [X0, BASE_Y], [290, BASE_Y], [345, BASE_Y + 14], [374, BASE_Y + 60], [386, BASE_Y + 88],
-        [392, BASE_Y + 40], [397, 200], [402, 146], [412, 126], [423, 140], [421, 200], [420, BASE_Y - 26],
-        [434, BASE_Y + 2], [462, BASE_Y + 8], [490, BASE_Y - 8], [503, 200], [508, 146], [518, 126],
-        [529, 140], [526, 200], [527, BASE_Y - 22], [540, BASE_Y + 2], [566, BASE_Y - 2], [620, BASE_Y], [X1, BASE_Y],
+        [X0, BASE_Y], [300, BASE_Y], [350, BASE_Y + 4], [378, BASE_Y + 40], [384, BASE_Y + 88], [384, BASE_Y + 88],
+        [392, 150], [392, 150], [394, BASE_Y - 40], [410, BASE_Y - 2], [440, BASE_Y + 4], [466, BASE_Y - 14],
+        [478, BASE_Y - 50], [482, 150], [482, 150], [484, BASE_Y - 22], [494, BASE_Y + 2], [520, BASE_Y - 4],
+        [560, BASE_Y], [700, BASE_Y], [X1, BASE_Y],
       ], 60),
     },
     heart: {
@@ -668,7 +669,7 @@
         const reach = 4 * m.sigma;
         const win = m.buf ? m.buf.length : 0;
         const G = this.o.speechGain * m.talk;
-        const A = m.amp * (1 - 0.45 * m.talk);
+        const A = m.amp * (1 - 0.35 * m.talk);
         for (let i = 0; i < N; i++) {
           let ds = B.S[i] - s0;
           if (this.closed) ds = mod(ds + L / 2, L) - L / 2;
@@ -680,7 +681,7 @@
             const f = clamp(((ds * m.dir) / reach + 1) / 2, 0, 0.9999) * (win - 1);
             const j = f | 0, fr = f - j;
             const a = (m.buf[j] * (1 - fr) + m.buf[j + 1] * fr) / m.peak;
-            d += G * m.amp * 1.25 * a;
+            d += G * m.amp * 1.7 * a;
           }
           B.D[i] += gsn * d;
           if (gsn > B.W[i]) { B.W[i] = gsn; B.C[i] = mi; }

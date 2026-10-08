@@ -126,7 +126,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
 <script src="muon.js"></script>
 <script>
-  const mu = MuonMascot.mount(document.getElementById('stage'), { voiceBase: 'voices/', autoBirth: true });
+  const mu = window.__mu = MuonMascot.mount(document.getElementById('stage'), { voiceBase: 'voices/', autoBirth: true });
 
   document.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', () => mu[b.dataset.act]()));
 
