@@ -19,6 +19,7 @@
   const N = 520;                  // samples along the line
   const DW = 1000, DH = 420;      // design space; everything scales from here
   const BASE_Y = 265;
+  const AMP = 42, SIG = 38;      // the packet at rest: height and width (design px)
 
   const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
   const lerp = (a, b, t) => a + (b - a) * t;
@@ -355,7 +356,7 @@
         if (!m.alive) return;
         m.target = null; m.maxSpeed = 0.22; m.accel = 6; m.lookAt = null;
         if (m.mood !== 'dizzy') m.mood = 'normal';
-        this.clock.to(m, { amp: 34, sigma: 34, eye: 1, blink: 0 }, 0.4, Ease.out);
+        this.clock.to(m, { amp: AMP, sigma: SIG, eye: 1, blink: 0 }, 0.4, Ease.out);
       });
       const guard = p => Promise.resolve(p).then(v => { if (ep !== this.epoch) throw CANCEL; return v; });
       const run = (async () => { await null; return fn(guard); })();
@@ -407,7 +408,7 @@
         await g(this.wait(0.9));
       }
       await g(Promise.all([
-        this.tween(m, { amp: 34, sigma: 34 }, quick ? 0.6 : 1.1, Ease.outElastic),
+        this.tween(m, { amp: AMP, sigma: SIG }, quick ? 0.6 : 1.1, Ease.outElastic),
       ]));
       m.mood = quick ? 'normal' : 'sleepy';
       await g(this.tween(m, { eye: 1 }, 0.5, Ease.outBack));
@@ -439,7 +440,7 @@
       m.crouch = false;
       m.airborne = true; m.jumpV = 370 * h; m.sx = 0.8; m.sy = 1.32;
       if (flip) m.flip = { t: 0, dur: 0.32 + 0.12 * h, dir: m.dir || 1 };
-      this.tween(m, { amp: 58 }, 0.12, Ease.out).then(() => this.tween(m, { amp: 34 }, 0.75, Ease.outElastic));
+      this.tween(m, { amp: AMP * 1.6 }, 0.12, Ease.out).then(() => this.tween(m, { amp: AMP }, 0.75, Ease.outElastic));
       await this.until(() => !m.airborne);
     }
 
@@ -607,7 +608,7 @@
         // wind up
         await g(Promise.all([this.tween(a, { u: 0.11, amp: 22, sigma: 26 }, 0.5, Ease.out), this.tween(b, { u: 0.89, amp: 22, sigma: 26 }, 0.5, Ease.out)]));
         await g(this.wait(0.6));
-        this.tween(a, { amp: 40 }, 0.3); this.tween(b, { amp: 40 }, 0.3);
+        this.tween(a, { amp: AMP * 1.15 }, 0.3); this.tween(b, { amp: AMP * 1.15 }, 0.3);
         a.target = 0.5; b.target = 0.5; a.maxSpeed = b.maxSpeed = 0.9; a.accel = b.accel = 4;
         a.lookAt = b.lookAt = null;
         await g(this.until(() => {
@@ -625,7 +626,7 @@
         a.vel = -0.7; b.vel = 0.7;
         a.target = uc - 0.24; b.target = uc + 0.24; a.maxSpeed = b.maxSpeed = 0.5;
         a.jumpV = 280; b.jumpV = 280; a.airborne = b.airborne = true;
-        this.tween(a, { amp: 34, sigma: 34 }, 0.9, Ease.outElastic); this.tween(b, { amp: 34, sigma: 34 }, 0.9, Ease.outElastic);
+        this.tween(a, { amp: AMP, sigma: SIG }, 0.9, Ease.outElastic); this.tween(b, { amp: AMP, sigma: SIG }, 0.9, Ease.outElastic);
         await g(this.wait(1.6));
         self.mood = 'sad'; anti.mood = 'normal';
         await g(this.speak(self, 'ouch'));
