@@ -34,6 +34,7 @@ open http://localhost:8000
     autoBirth: true,        // play the birth on load (without sound until the visitor clicks)
   });
   // mu.birth()  mu.wander()  mu.hop()  mu.ride()  mu.collide()  mu.faces()  mu.stop()
+  // mu.style('marker' | 'ink' | 'scope' | 'chalk')
   // mu.emote('happy' | 'surprised' | 'determined' | 'sleepy' | 'sad' | 'smug' | 'dizzy' | 'normal')
   // mu.morph('flat' | 'hills' | 'wave' | 'ring' | 'loop' | 'mu' | 'heart')
   // mu.say('hello')  -- any id from voices/manifest.json

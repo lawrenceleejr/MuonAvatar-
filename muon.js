@@ -297,6 +297,21 @@
     get speaking() { return !!this.speech; }
   }
 
+  // ------------------------------------------------------------------ line styles
+  // A style picks how the line is drawn, the drawing rate, and (optionally) its own palette and screen.
+  const STYLES = {
+    marker: { label: 'marker', fps: 12, line: 'marker' },
+    ink:    { label: 'clean ink', fps: 60, line: 'ink' },
+    scope:  {
+      label: 'oscilloscope', fps: 60, line: 'scope', screen: '#06110b', persistence: 0.28,
+      colors: { ink: '#57ff8f', paper: '#06110b', mu: '#d6ffe2', anti: '#5ff0ff', font: 'monospace' },
+    },
+    chalk:  {
+      label: 'chalk', fps: 15, line: 'chalk', screen: '#24302a',
+      colors: { ink: '#efeee6', paper: '#24302a', mu: '#ffb4a6', anti: '#a8d3ff' },
+    },
+  };
+
   // ------------------------------------------------------------------ the scene
   class Scene {
     constructor(el, opts) {
@@ -318,7 +333,9 @@
         captions: true,
         autoBirth: false,
         colors: null,
+        style: 'marker',
       }, opts || {});
+      this.st = STYLES[this.o.style] || STYLES.marker;
       seed = this.o.seed >>> 0;
       this.log = [];
       this.clock = new Clock();
@@ -362,13 +379,20 @@
         mu: v('--mu-minus', dark ? '#ff7a63' : '#b33a2a'),
         anti: v('--mu-plus', dark ? '#6fb2ff' : '#2a64a0'),
         font: v('--mu-font', '"EB Garamond", Georgia, serif'),
-      }, this.o.colors || {});
+      }, (this.st && this.st.colors) || {}, this.o.colors || {});
       c.family = c.font.split(',')[0].replace(/["']/g, '').trim();
       this.c = c;
       // canvas text never triggers a web font's lazily loaded subsets (Greek, here), so ask for them
       this.fontsReady = document.fonts && document.fonts.load
         ? Promise.all(['italic 20px', '20px'].map(f => document.fonts.load(`${f} "${c.family}"`, 'μ⁻⁺“”'))).catch(() => null)
         : Promise.resolve();
+    }
+
+    setStyle(name) {
+      if (!STYLES[name]) return;
+      this.st = STYLES[name]; this.o.style = name;
+      this.readColors();
+      if (this.p) this.p.clear();
     }
 
     // ---------------- acts: one choreography at a time; a new act cancels the old
@@ -787,7 +811,7 @@
         const dt = this.o.capture ? 1 / (this.o.capture.fps || 30) : Math.min(0.05, p.deltaTime / 1000 || 1 / 60);
         this.update(dt * this.timeScale);
         // hold each drawing: only redraw when the frame number at the drawing rate changes
-        const frame = Math.floor(this.t * (this.o.fps || 60));
+        const frame = Math.floor(this.t * (this.st.fps || this.o.fps || 60));
         if (frame !== shown || this.o.capture) { shown = frame; this.render(p); }
       };
     }
@@ -1029,18 +1053,35 @@
     // ------------------------------------------------------------------ drawing
     render(p) {
       const B = this._buf, c = this.c, s = p.width / DW;
-      if (this.o.background) p.background(this.o.background === true ? c.paper : this.o.background); else p.clear();
+      const st = this.st;
+      if (st.screen) {
+        // a screen of its own; the scope fades the last frame instead of clearing it (phosphor persistence)
+        const ctx0 = p.drawingContext, q = p.color(st.screen);
+        ctx0.save(); ctx0.setTransform(1, 0, 0, 1, 0, 0);
+        ctx0.fillStyle = `rgba(${p.red(q)},${p.green(q)},${p.blue(q)},${st.persistence || 1})`;
+        ctx0.fillRect(0, 0, p.width * p.pixelDensity(), p.height * p.pixelDensity());
+        ctx0.restore();
+      } else if (this.o.background) p.background(this.o.background === true ? c.paper : this.o.background); else p.clear();
       p.push();
       p.scale(s);
+      if (st.line === 'scope') this.drawGraticule(p);
       if (this.shake > 0) p.translate(rand(-1, 1) * 4 * this.shake, rand(-1, 1) * 4 * this.shake);
 
       // detector rings & tracks from collisions: drawn beneath the line
       for (const e of this.events) this.drawEvent(p, e);
 
+      if (st.line === 'marker') this.drawMarker(p);
+      else this.drawTrace(p, st.line);
+
+      this.mu.forEach(m => m.alive && this.drawFace(p, m));
+      p.pop();
+    }
+
+    drawMarker(p) {
       // the line itself, drawn like a marker by hand: every drawing is new, the line is laid down
       // in separate strokes that lift, overlap and don't quite meet, and pressure varies along each one
-      const ctx = p.drawingContext, L = B.S[N - 1];
-      const tb = Math.floor(this.t * (this.o.boilFps || this.o.fps || 12)), wob = this.o.wobble;
+      const B = this._buf, c = this.c, ctx = p.drawingContext, L = B.S[N - 1];
+      const tb = Math.floor(this.t * (this.o.boilFps || this.st.fps || 12)), wob = this.o.wobble;
       const half = this.reveal / 2, sLo = (0.5 - half) * L, sHi = (0.5 + half) * L;
       const seamless = this.closed && this.reveal >= 1 && !this.morphState;
       const rgb = h => { const q = p.color(h); return [p.red(q), p.green(q), p.blue(q)]; };
@@ -1093,8 +1134,97 @@
       }
       ctx.restore();
 
-      this.mu.forEach(m => m.alive && this.drawFace(p, m));
-      p.pop();
+    }
+
+    // smooth projected points along the line (no hand wobble)
+    tracePoints(jitter = 0) {
+      const B = this._buf, pts = this._pts || (this._pts = new Array(N));
+      for (let i = 0; i < N; i++) {
+        const d = B.D[i] + (jitter ? (rnd() - 0.5) * jitter : 0);
+        pts[i] = this.proj(B.bx[i] + B.nx[i] * d, B.by[i] + B.ny[i] * d, B.bz[i] + B.Dz[i]);
+      }
+      return pts;
+    }
+
+    drawTrace(p, kind) {
+      const B = this._buf, c = this.c, ctx = p.drawingContext, L = B.S[N - 1];
+      const half = this.reveal / 2, sLo = (0.5 - half) * L, sHi = (0.5 + half) * L;
+      const rgb = h => { const q = p.color(h); return [p.red(q), p.green(q), p.blue(q)]; };
+      const ink = rgb(c.ink), cols = [rgb(c.mu), rgb(c.anti)];
+      const colorAt = (i, a) => {
+        const w = B.W[i], ci = B.C[i], k = w > 0.02 && ci >= 0 ? Math.min(1, w * 1.6) : 0, cc = k ? cols[ci] : ink;
+        return `rgba(${lerp(ink[0], cc[0], k) | 0},${lerp(ink[1], cc[1], k) | 0},${lerp(ink[2], cc[2], k) | 0},${a})`;
+      };
+      const pts = this.tracePoints(kind === 'scope' ? 0.9 : 0);
+      const on = i => B.S[i] >= sLo && B.S[i] <= sHi;
+      ctx.save(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      const path = () => {
+        ctx.beginPath(); let started = false;
+        for (let i = 0; i < N; i++) { if (!on(i)) { started = false; continue; } const q = pts[i]; started ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); started = true; }
+      };
+      const segs = (width, alpha, jit = 0) => {
+        for (let i = 0; i < N - 1; i++) {
+          if (!on(i) || !on(i + 1)) continue;
+          const a = pts[i], b = pts[i + 1];
+          ctx.strokeStyle = colorAt(i, typeof alpha === 'function' ? alpha(i) : alpha);
+          ctx.lineWidth = width * b[2];
+          ctx.beginPath();
+          ctx.moveTo(a[0] + (jit ? (rnd() - 0.5) * jit : 0), a[1] + (jit ? (rnd() - 0.5) * jit : 0));
+          ctx.lineTo(b[0] + (jit ? (rnd() - 0.5) * jit : 0), b[1] + (jit ? (rnd() - 0.5) * jit : 0));
+          ctx.stroke();
+        }
+      };
+      if (kind === 'ink') {
+        segs(3.4, 1);
+      } else if (kind === 'scope') {
+        // phosphor: a wide faint halo, a softer glow, then a hot thin core; brighter where the beam slows
+        ctx.globalCompositeOperation = 'lighter';
+        path(); ctx.strokeStyle = `rgba(${ink[0]},${ink[1]},${ink[2]},0.07)`; ctx.lineWidth = 16 * this.cam.zoom; ctx.stroke();
+        path(); ctx.strokeStyle = `rgba(${ink[0]},${ink[1]},${ink[2]},0.18)`; ctx.lineWidth = 6 * this.cam.zoom; ctx.stroke();
+        segs(2, i => {
+          const a = pts[i], b = pts[i + 1], v = Math.hypot(b[0] - a[0], b[1] - a[1]);
+          return clamp(1.6 / Math.max(0.6, v), 0.45, 1);
+        });
+      } else if (kind === 'chalk') {
+        // several thin, broken passes with uneven pressure read as chalk on slate
+        for (let pass = 0; pass < 4; pass++) {
+          for (let i = 0; i < N - 1; i++) {
+            if (!on(i) || !on(i + 1) || rnd() < 0.12) continue;
+            const a = pts[i], b = pts[i + 1], o = (pass - 1.5) * 0.9;
+            ctx.strokeStyle = colorAt(i, rand(0.25, 0.75));
+            ctx.lineWidth = rand(0.8, 2.2) * b[2];
+            ctx.beginPath();
+            ctx.moveTo(a[0] + B.nx[i] * o + rand(-0.6, 0.6), a[1] + B.ny[i] * o + rand(-0.6, 0.6));
+            ctx.lineTo(b[0] + B.nx[i] * o + rand(-0.6, 0.6), b[1] + B.ny[i] * o + rand(-0.6, 0.6));
+            ctx.stroke();
+          }
+        }
+      }
+      ctx.restore();
+    }
+
+    drawGraticule(p) {
+      // a fixed 10 × 8 division screen, like the bench scope: faint grid, ticked centre axes, readout
+      const ctx = p.drawingContext, q = p.color(this.c.ink);
+      const col = a => `rgba(${p.red(q)},${p.green(q)},${p.blue(q)},${a})`;
+      const x0 = 30, x1 = DW - 30, y0 = 18, y1 = DH - 40, dx = (x1 - x0) / 10, dy = (y1 - y0) / 8;
+      ctx.save();
+      ctx.lineWidth = 0.8; ctx.strokeStyle = col(0.13);
+      ctx.beginPath();
+      for (let i = 0; i <= 10; i++) { ctx.moveTo(x0 + i * dx, y0); ctx.lineTo(x0 + i * dx, y1); }
+      for (let j = 0; j <= 8; j++) { ctx.moveTo(x0, y0 + j * dy); ctx.lineTo(x1, y0 + j * dy); }
+      ctx.stroke();
+      ctx.strokeStyle = col(0.22); ctx.beginPath();
+      const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+      for (let i = 0; i <= 50; i++) { const x = x0 + i * dx / 5; ctx.moveTo(x, cy - 3); ctx.lineTo(x, cy + 3); }
+      for (let j = 0; j <= 40; j++) { const y = y0 + j * dy / 5; ctx.moveTo(cx - 3, y); ctx.lineTo(cx + 3, y); }
+      ctx.stroke();
+      ctx.fillStyle = col(0.55); ctx.font = '13px monospace'; ctx.textBaseline = 'top';
+      ctx.fillText('CH1 μ⁻  50 mV/div', x0, y1 + 10);
+      if (this.mu[1].alive) { ctx.fillStyle = `rgba(95,240,255,0.55)`; ctx.fillText('CH2 μ⁺  50 mV/div', x0 + 190, y1 + 10); ctx.fillStyle = col(0.55); }
+      ctx.textAlign = 'right';
+      ctx.fillText('M 2.20 μs   √s = 10 TeV', x1, y1 + 10);
+      ctx.restore();
     }
 
     drawEvent(p, e) {
@@ -1149,90 +1279,43 @@
       const st = Math.abs(m.lean);
       p.scale(a.k * m.eye * m.sx * (1 + st * 0.14), a.k * m.eye * m.sy * (1 - st * 0.08));
       const ctx = p.drawingContext;
-      const tb = Math.floor(t * (this.o.boilFps || this.o.fps || 12));
+      if (this.st.line === 'scope') { ctx.shadowColor = c.ink; ctx.shadowBlur = 10; }
       const paper = c.paper, ink = c.ink;
-      const lidCol = paper;
-      const R = 13.5, gap = 17 + Math.abs(m.lean) * 3;
+      const R = 13.5, gap = 15 + Math.abs(m.lean) * 3;
+      ctx.lineCap = 'round';
       for (const side of [-1, 1]) {
-        // the leading eye is a touch bigger, and the two are never quite identical
         const lead = 1 + 0.1 * side * m.lean;
-        const sz = ex.size * lead * (side < 0 ? 1 : 0.94);
-        const rx = R * 0.88 * sz, ry = R * 1.12 * sz;
+        const sz = ex.size * lead;
+        const rx = R * 0.6 * sz, ry = R * 0.92 * sz;
+        // no pupils: the whole eye glides toward where he looks
+        const gx = m.look.x * rx * 0.55, gy = m.look.y * ry * 0.35;
         ctx.save();
-        ctx.translate(side * gap, side > 0 ? 1 : 0);
-        // lumpy outline, redrawn every drawing
-        const lumpy = (seed, amp, n = 9, open = 0) => {
-          const pts = [];
-          for (let q = 0; q < n; q++) {
-            const th = (q / n) * TAU + seed, w = 1 + (p.noise(q * 0.9 + side * 17 + seed * 3, tb * 2.3) - 0.5) * amp;
-            pts.push([Math.cos(th) * rx * w, Math.sin(th) * ry * w]);
-          }
-          const path = new Path2D(), mid = (u, v) => [(u[0] + v[0]) / 2, (u[1] + v[1]) / 2];
-          let m0 = mid(pts[n - 1], pts[0]);
-          path.moveTo(m0[0], m0[1]);
-          for (let q = 0; q < n; q++) { const m1 = mid(pts[q], pts[(q + 1) % n]); path.quadraticCurveTo(pts[q][0], pts[q][1], m1[0], m1[1]); }
-          if (open) { const e = pts[0]; path.lineTo(e[0] + open, e[1] - open * 0.6); } else path.closePath();
-          return path;
-        };
-        const eyePath = lumpy(0, 0.14);
-        ctx.fillStyle = paper; ctx.fill(eyePath);
-        ctx.save();
-        ctx.clip(eyePath);
-        // pupil
-        if (m.mood === 'dizzy' || m.dizzy > 0.3) {
-          ctx.strokeStyle = c[m.color]; ctx.lineWidth = 1.5; ctx.beginPath();
-          for (let q = 0; q < 36; q++) {
-            const th = q * 0.55 + t * 9 * side, rr = q * 0.27;
-            q ? ctx.lineTo(Math.cos(th) * rr, Math.sin(th) * rr) : ctx.moveTo(0, 0);
-          }
-          ctx.stroke();
-        } else {
-          const pr = rx * 0.56 * ex.pupil;
-          // a slight inward pull when looking close makes the gaze feel focused
-          const px = m.look.x * (rx - pr * 0.75) - side * 0.6, py = m.look.y * (ry - pr * 0.8);
-          ctx.fillStyle = ink; ctx.beginPath(); ctx.arc(px, py, pr, 0, TAU); ctx.fill();
-          ctx.fillStyle = paper; ctx.beginPath(); ctx.arc(px + pr * 0.35, py - pr * 0.38, pr * 0.3, 0, TAU); ctx.fill();
-        }
-        ctx.strokeStyle = ink; ctx.lineWidth = 2.6; ctx.fillStyle = lidCol;
-        // upper lid: sweeps down to blink, slants with the mood
+        ctx.translate(side * gap + gx, gy);
+        ctx.fillStyle = ink; ctx.strokeStyle = ink; ctx.lineWidth = 3.4;
         const wink = side > 0 ? m.wink : 0;
-        const lid = Math.max(ex.lid, m.blink, wink);
-        if (lid > 0.01) {
+        const lid = Math.max(ex.lid * 0.8, m.blink, wink);
+        if (m.mood === 'dizzy' || m.dizzy > 0.3) {
+          ctx.lineWidth = 2.4; ctx.beginPath();
+          for (let q = 0; q < 26; q++) { const th = q * 0.6 + t * 9 * side, rr = q * 0.36; q ? ctx.lineTo(Math.cos(th) * rr, Math.sin(th) * rr) : ctx.moveTo(0, 0); }
+          ctx.stroke();
+        } else if (ex.low > 0.38 && lid < 0.6) {
+          // happy: a single upturned arc
+          ctx.beginPath(); ctx.arc(0, ry * 0.45, rx * 1.15, Math.PI + 0.35, TAU - 0.35); ctx.stroke();
+        } else if (lid > 0.9) {
+          // closed: a short line
+          ctx.beginPath(); ctx.moveTo(-rx * 1.05, ry * 0.15); ctx.quadraticCurveTo(0, ry * 0.4, rx * 1.05, ry * 0.15); ctx.stroke();
+        } else {
+          // a solid oval, cut by the upper lid (slanted by mood) and the lower lid
           ctx.save();
-          ctx.translate(0, -ry + 2.05 * ry * lid);
-          ctx.rotate(-side * ex.tilt);
           ctx.beginPath();
-          ctx.moveTo(-2 * rx, -4 * ry); ctx.lineTo(2 * rx, -4 * ry); ctx.lineTo(2 * rx, 0);
-          ctx.quadraticCurveTo(0, 2.2 * Math.min(1, lid * 3), -2 * rx, 0); ctx.closePath();
-          ctx.fill();
-          ctx.beginPath(); ctx.moveTo(-2 * rx, 0); ctx.quadraticCurveTo(0, 2.2 * Math.min(1, lid * 3), 2 * rx, 0); ctx.stroke();
+          ctx.save(); ctx.translate(0, -ry + 2 * ry * lid); ctx.rotate(-side * ex.tilt);
+          ctx.rect(-3 * rx, 0, 6 * rx, 4 * ry); ctx.restore();
+          ctx.clip();
+          if (ex.low > 0.05) { ctx.beginPath(); ctx.rect(-3 * rx, -4 * ry, 6 * rx, 4 * ry + ry * (1 - 1.4 * ex.low)); ctx.clip(); }
+          ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, 0, TAU); ctx.fill();
           ctx.restore();
+          if (lid < 0.45) { ctx.fillStyle = paper; ctx.beginPath(); ctx.arc(rx * 0.32, -ry * 0.42, rx * 0.26, 0, TAU); ctx.fill(); }
         }
-        // lower lid: rises into a smile
-        if (ex.low > 0.01) {
-          const yb = ry * (1 - 1.75 * ex.low);
-          ctx.beginPath();
-          ctx.moveTo(-2 * rx, ry * 2); ctx.lineTo(-1.2 * rx, ry * 0.9);
-          ctx.quadraticCurveTo(0, yb - ry * 0.55 * ex.low, 1.2 * rx, ry * 0.9);
-          ctx.lineTo(2 * rx, ry * 2); ctx.closePath();
-          ctx.fill(); ctx.stroke();
-        }
-        ctx.restore();
-        ctx.strokeStyle = ink; ctx.lineWidth = 3.2; ctx.stroke(eyePath);
-        // brow: a tapered stroke that lifts with loud syllables
-        const by = -ry - 7 - ex.browY - (side > 0 ? ex.asym : 0);
-        ctx.save();
-        ctx.translate(side * 1.5, by);
-        ctx.rotate(-side * ex.browA);
-        const bw = rx * 1.05, arch = 3 + ex.browY * 0.15;
-        const jy = (p.noise(side * 5, tb * 1.3) - 0.5) * 1.6;
-        ctx.fillStyle = ink;
-        ctx.beginPath();
-        ctx.moveTo(-bw, 1 + jy);
-        ctx.quadraticCurveTo(0, -arch - 3.4, bw, 1 - jy);
-        ctx.quadraticCurveTo(0, -arch + 1.4, -bw, 1 + jy);
-        ctx.fill();
-        ctx.restore();
         ctx.restore();
       }
       p.pop();
@@ -1263,6 +1346,8 @@
       ride: () => scene.ride(),
       boop: () => scene.act(async g => { await scene._ensureAlive(g); await g(scene.boop(scene.mu[0])); return scene._wander(g); }),
       faces: () => scene.faces(),
+      style: name => scene.setStyle(name),
+      styles: Object.keys(STYLES),
       emote: mood => scene.emote(mood),
       moods: Object.keys(MOODS),
       morph: name => scene.morph(name),

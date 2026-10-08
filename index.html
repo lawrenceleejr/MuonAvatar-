@@ -93,6 +93,8 @@
       <button class="link" data-act="wander">wander</button>
       <button class="link" data-act="stop">sit still</button>
     </dd>
+    <dt>style</dt>
+    <dd id="styles"></dd>
     <dt>line</dt>
     <dd id="shapes"></dd>
     <dt>say</dt>
@@ -132,6 +134,19 @@
   const mu = MuonMascot.mount(document.getElementById('stage'), { voiceBase: 'voices/', autoBirth: true });
 
   document.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', () => mu[b.dataset.act]()));
+
+  const stylesEl = document.getElementById('styles');
+  const styleNames = { marker: 'marker', ink: 'clean ink', scope: 'oscilloscope', chalk: 'chalk' };
+  mu.styles.forEach(st => {
+    const b = document.createElement('button');
+    b.className = 'link'; b.textContent = styleNames[st] || st;
+    b.setAttribute('aria-pressed', st === 'marker');
+    b.addEventListener('click', () => {
+      stylesEl.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b));
+      mu.style(st);
+    });
+    stylesEl.appendChild(b);
+  });
 
   const shapesEl = document.getElementById('shapes');
   const shapeNames = { flat: 'flat', hills: 'hills', wave: 'wave', ring: 'ring', loop: 'loop', mu: 'μ', heart: 'heart', dive: 'dive', helix: 'helix' };
