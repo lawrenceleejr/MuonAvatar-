@@ -812,9 +812,9 @@
 
         // superpose this packet onto the line
         // lopsided envelope: the peak runs ahead, the front steepens, the tail stretches out behind
-        const off = m.lean * m.sigma * 0.6;
+        const off = m.lean * m.sigma * 0.8;
         const s0 = this.pos(m) * L + off;
-        const reach = 4 * m.sigma * (1 + 0.5 * Math.abs(m.lean));
+        const reach = 4 * m.sigma * (1 + 0.62 * Math.abs(m.lean)) + Math.abs(off);
         const w = m.win;
         const G = this.o.speechGain * m.talk;
         const A = m.amp * (1 - 0.35 * m.talk);
@@ -822,7 +822,7 @@
           let ds = B.S[i] - s0;
           if (this.closed) ds = mod(ds + L / 2, L) - L / 2;
           if (ds < -reach || ds > reach) continue;
-          const sg = m.sigma * (1 - 0.5 * m.lean * Math.sign(ds));
+          const sg = m.sigma * (1 - 0.62 * m.lean * Math.sign(ds));
           const gsn = Math.exp(-(ds * ds) / (2 * sg * sg));
           let d = A * Math.cos(this.o.carrier * ds - m.phase);
           if (G > 0.001 && w) {
@@ -842,7 +842,7 @@
     anchor(m) {
       const B = this._buf;
       const L = B.S[N - 1] || 1;
-      let u = this.pos(m) + (m.lean * m.sigma * 0.6) / L;
+      let u = this.pos(m) + (m.lean * m.sigma * 0.8) / L;
       u = this.closed ? mod(u, 1) : clamp(u, 0, 1);
       const f = u * (N - 1), i = Math.min(N - 2, f | 0), fr = f - i;
       const x = lerp(B.bx[i], B.bx[i + 1], fr), y = lerp(B.by[i], B.by[i + 1], fr);
