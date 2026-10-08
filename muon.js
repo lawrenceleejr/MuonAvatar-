@@ -1190,9 +1190,9 @@
         for (let pass = 0; pass < 4; pass++) {
           for (let i = 0; i < N - 1; i++) {
             if (!on(i) || !on(i + 1) || rnd() < 0.12) continue;
-            const a = pts[i], b = pts[i + 1], o = (pass - 1.5) * 0.9;
+            const a = pts[i], b = pts[i + 1], o = (pass - 1.5) * 1.6;
             ctx.strokeStyle = colorAt(i, rand(0.25, 0.75));
-            ctx.lineWidth = rand(0.8, 2.2) * b[2];
+            ctx.lineWidth = rand(1.6, 3.6) * b[2];
             ctx.beginPath();
             ctx.moveTo(a[0] + B.nx[i] * o + rand(-0.6, 0.6), a[1] + B.ny[i] * o + rand(-0.6, 0.6));
             ctx.lineTo(b[0] + B.nx[i] * o + rand(-0.6, 0.6), b[1] + B.ny[i] * o + rand(-0.6, 0.6));
@@ -1279,7 +1279,7 @@
       const st = Math.abs(m.lean);
       p.scale(a.k * m.eye * m.sx * (1 + st * 0.14), a.k * m.eye * m.sy * (1 - st * 0.08));
       const ctx = p.drawingContext;
-      if (this.st.line === 'scope') { ctx.shadowColor = c.ink; ctx.shadowBlur = 10; }
+      if (this.st.line === 'scope') { ctx.shadowColor = c.ink; ctx.shadowBlur = 6; }
       const paper = c.paper, ink = c.ink;
       const R = 13.5, gap = 15 + Math.abs(m.lean) * 3;
       ctx.lineCap = 'round';
