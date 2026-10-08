@@ -480,7 +480,7 @@
       // lock the camera on him first: perspective magnifies any offset from the frame centre,
       // so a leap at the viewer must start on the camera's axis or he flies out of frame
       const w = this.anchorWorld(m, false);
-      this.shot = { wide: true, fx: w.x, fy: w.y, fz: w.z, zoom: 1, yaw: this.cam.yaw * 0.3, pitch: 0.08, roll: 0, K: 90, D: 16 };
+      this.shot = { wide: true, fx: w.x, fy: w.y, fz: w.z, zoom: 1, yaw: 0, pitch: 0, roll: 0, K: 90, D: 16 };   // level: any tilt would steer the leap off-axis
       m.mood = 'surprised'; m.sx = 1.3; m.sy = 0.7;
       await this.tween(m, { zPush: -80, amp: AMP * 0.6 }, 0.32, Ease.out);      // wind up into the page
       m.mood = 'happy';
