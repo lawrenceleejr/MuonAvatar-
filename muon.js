@@ -100,10 +100,10 @@
     mu: {
       // the letter μ, written in one stroke
       pts: catmull([
-        [X0, BASE_Y], [250, BASE_Y], [330, BASE_Y + 8], [372, BASE_Y + 60], [392, BASE_Y + 92],
-        [400, BASE_Y + 40], [404, 190], [408, 128], [412, 190], [416, BASE_Y - 30],
-        [440, BASE_Y + 2], [478, BASE_Y + 4], [506, BASE_Y - 30], [516, 190], [522, 128],
-        [528, 190], [534, BASE_Y - 20], [548, BASE_Y + 4], [580, BASE_Y], [700, BASE_Y], [X1, BASE_Y],
+        [X0, BASE_Y], [290, BASE_Y], [345, BASE_Y + 14], [374, BASE_Y + 60], [386, BASE_Y + 88],
+        [392, BASE_Y + 40], [397, 200], [402, 146], [412, 126], [423, 140], [421, 200], [420, BASE_Y - 26],
+        [434, BASE_Y + 2], [462, BASE_Y + 8], [490, BASE_Y - 8], [503, 200], [508, 146], [518, 126],
+        [529, 140], [526, 200], [527, BASE_Y - 22], [540, BASE_Y + 2], [566, BASE_Y - 2], [620, BASE_Y], [X1, BASE_Y],
       ], 60),
     },
     heart: {
@@ -474,17 +474,20 @@
       this.voice.unlock();
       return this.act(async g => {
         await this._ensureAlive(g);
-        const [a, b] = this.mu;
+        let [a, b] = this.mu;
         a.u = mod(a.u, 1);
         if (!b.alive) {
           await this._birth(b, g, this.closed ? mod(a.u + 0.5, 1) : (a.u < 0.5 ? 0.85 : 0.15), true);
           await g(this.speak(b, 'anti'));
         }
         b.u = mod(b.u, 1);
+        if (a.u > b.u) [a, b] = [b, a];   // whoever is on the left starts on the left
+        const self = this.mu[0], anti = this.mu[1];
         await g(Promise.all([this.moveTo(a, 0.16, 0.4), this.moveTo(b, 0.84, 0.4)]));
         a.lookAt = { x: 1, y: 0 }; b.lookAt = { x: -1, y: 0 };
         a.mood = b.mood = 'determined';
-        this.speak(a, 'ready');
+        await g(this.speak(anti, 'anti_ready'));
+        this.speak(self, 'ready');
         await g(this.wait(0.7));
         // wind up
         await g(Promise.all([this.tween(a, { u: 0.11, amp: 22, sigma: 26 }, 0.5, Ease.out), this.tween(b, { u: 0.89, amp: 22, sigma: 26 }, 0.5, Ease.out)]));
@@ -508,8 +511,8 @@
         a.jumpV = 280; b.jumpV = 280; a.airborne = b.airborne = true;
         this.tween(a, { amp: 34, sigma: 34 }, 0.9, Ease.outElastic); this.tween(b, { amp: 34, sigma: 34 }, 0.9, Ease.outElastic);
         await g(this.wait(1.6));
-        await g(this.speak(a, 'ouch'));
-        await g(this.speak(b, 'anti_ouch'));
+        await g(this.speak(self, 'ouch'));
+        await g(this.speak(anti, 'anti_ouch'));
         a.mood = b.mood = 'happy';
         await g(this.wait(1));
         a.mood = b.mood = 'normal';
