@@ -1,0 +1,106 @@
+[
+ {
+  "id": "hello",
+  "who": "mu-",
+  "voice": "am_puck",
+  "text": "Hi! I'm Mu, your friendly muon!",
+  "file": "hello.mp3",
+  "seconds": 2.05
+ },
+ {
+  "id": "heavy",
+  "who": "mu-",
+  "voice": "am_puck",
+  "text": "I'm two hundred times heavier than an electron. Don't tell anyone.",
+  "file": "heavy.mp3",
+  "seconds": 4.12
+ },
+ {
+  "id": "wheee",
+  "who": "mu-",
+  "voice": "am_puck",
+  "text": "Wheee! Riding the wave!",
+  "file": "wheee.mp3",
+  "seconds": 1.6
+ },
+ {
+  "id": "lifetime",
+  "who": "mu-",
+  "voice": "am_puck",
+  "text": "I only live two microseconds, so let's go fast!",
+  "file": "lifetime.mp3",
+  "seconds": 3.0
+ },
+ {
+  "id": "dilation",
+  "who": "mu-",
+  "voice": "am_puck",
+  "text": "Good thing time dilation keeps me young.",
+  "file": "dilation.mp3",
+  "seconds": 2.5
+ },
+ {
+  "id": "ring",
+  "who": "mu-",
+  "voice": "am_puck",
+  "text": "Ooh, a ring! Round and round we go!",
+  "file": "ring.mp3",
+  "seconds": 2.17
+ },
+ {
+  "id": "mu",
+  "who": "mu-",
+  "voice": "am_puck",
+  "text": "Look, it's me! The letter mu!",
+  "file": "mu.mp3",
+  "seconds": 1.88
+ },
+ {
+  "id": "ready",
+  "who": "mu-",
+  "voice": "am_puck",
+  "text": "Ready... set... collide!",
+  "file": "ready.mp3",
+  "seconds": 1.77
+ },
+ {
+  "id": "ouch",
+  "who": "mu-",
+  "voice": "am_puck",
+  "text": "Ouch! Did anybody see a Higgs?",
+  "file": "ouch.mp3",
+  "seconds": 2.12
+ },
+ {
+  "id": "anti",
+  "who": "mu+",
+  "voice": "af_bella",
+  "text": "Hey! I'm the antimuon. Same mass, opposite charge!",
+  "file": "anti.mp3",
+  "seconds": 3.83
+ },
+ {
+  "id": "anti_ready",
+  "who": "mu+",
+  "voice": "af_bella",
+  "text": "Bring it on, little brother!",
+  "file": "anti_ready.mp3",
+  "seconds": 2.05
+ },
+ {
+  "id": "anti_ouch",
+  "who": "mu+",
+  "voice": "af_bella",
+  "text": "Whoa. Ten teravolts of fun!",
+  "file": "anti_ouch.mp3",
+  "seconds": 2.52
+ },
+ {
+  "id": "bye",
+  "who": "mu-",
+  "voice": "am_puck",
+  "text": "Bye bye! Come smash with us soon!",
+  "file": "bye.mp3",
+  "seconds": 2.15
+ }
+]

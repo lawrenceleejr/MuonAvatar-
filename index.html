@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mu the Muon</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&display=swap">
+<style>
+  /* Layout: one Tufte-style text column; the stage spans it, a sidenote column holds the physics. */
+  :root {
+    --paper: #fffff8;
+    --ink: #1d1d1b;
+    --muted: #6b6a62;
+    --rule: #d9d7cc;
+    --mu-minus: #b33a2a;
+    --mu-plus: #2a64a0;
+    --serif: "EB Garamond", "Iowan Old Style", Palatino, Georgia, serif;
+    --mu-ink: var(--ink);
+    --mu-paper: var(--paper);
+    --mu-font: var(--serif);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #1b1b19; --ink: #e8e6df; --muted: #9c9a90; --rule: #3a3934;
+      --mu-minus: #ff7a63; --mu-plus: #6fb2ff; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #1b1b19; --ink: #e8e6df; --muted: #9c9a90; --rule: #3a3934;
+    --mu-minus: #ff7a63; --mu-plus: #6fb2ff; color-scheme: dark;
+  }
+  html { font-size: 17px; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font-family: var(--serif); line-height: 1.5;
+    padding-inline: max(16px, 4vw); padding-block: 2.5rem 4rem;
+  }
+  main { max-width: 58rem; margin: 0 auto; }
+  h1 { font-weight: 400; font-size: 2.6rem; line-height: 1.1; margin: 0; text-wrap: balance; }
+  .sub { font-style: italic; font-size: 1.25rem; color: var(--muted); margin: .3rem 0 1.5rem; }
+  #stage { width: 100%; margin: 0 0 .5rem; touch-action: manipulation; }
+  #stage canvas { display: block; }
+
+  .controls { display: grid; grid-template-columns: 7.5rem 1fr; gap: .45rem 1.2rem; align-items: baseline;
+    border-top: 1px solid var(--rule); padding-top: 1rem; }
+  .controls dt { font-variant: small-caps; letter-spacing: .06em; color: var(--muted); }
+  .controls dd { margin: 0; display: flex; flex-wrap: wrap; gap: .2rem 1rem; min-width: 0; }
+  button.link {
+    font: inherit; font-size: 1.05rem; color: var(--ink); background: none; border: 0; padding: 0;
+    cursor: pointer; text-decoration: underline; text-decoration-color: var(--rule); text-underline-offset: .2em;
+  }
+  button.link:hover, button.link[aria-pressed="true"] { text-decoration-color: currentColor; }
+  button.link:focus-visible { outline: 1px solid var(--ink); outline-offset: 3px; }
+  button.link.minus { color: var(--mu-minus); }
+  button.link.plus { color: var(--mu-plus); }
+  label.knob { display: flex; gap: .6rem; align-items: center; font-size: .95rem; color: var(--muted); }
+  label.knob input { accent-color: var(--ink); width: 9rem; }
+  label.knob output { font-variant-numeric: tabular-nums; color: var(--ink); min-width: 4.5em; }
+
+  .notes { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 17rem); gap: 2.5rem; margin-top: 2.2rem; }
+  .notes p { margin: 0 0 1rem; max-width: 34rem; }
+  .side { font-size: .9rem; color: var(--muted); line-height: 1.45; }
+  .eq { font-style: italic; font-size: 1.15rem; margin: .4rem 0 1rem; white-space: nowrap; overflow-x: auto; }
+  .eq b { font-weight: 400; color: var(--mu-minus); }
+  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .82em; }
+  @media (max-width: 760px) {
+    .notes { grid-template-columns: 1fr; gap: 0; }
+    .controls { grid-template-columns: 1fr; gap: .2rem; }
+    .controls dd { margin-bottom: .6rem; }
+    h1 { font-size: 2rem; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Mu</h1>
+  <p class="sub">a wave packet who lives on a line, mascot of the muon collider</p>
+
+  <div id="stage" aria-label="Animated muon mascot"></div>
+
+  <dl class="controls">
+    <dt>act</dt>
+    <dd>
+      <button class="link" data-act="birth">be born</button>
+      <button class="link" data-act="ride">ride the line</button>
+      <button class="link" data-act="hop">hop</button>
+      <button class="link" data-act="collide">collide μ⁻μ⁺</button>
+      <button class="link" data-act="wander">wander</button>
+      <button class="link" data-act="stop">sit still</button>
+    </dd>
+    <dt>line</dt>
+    <dd id="shapes"></dd>
+    <dt>say</dt>
+    <dd id="lines"><span class="side">loading voice lines…</span></dd>
+    <dt>voice</dt>
+    <dd>
+      <label class="knob">low-pass <input id="lp" type="range" min="120" max="2000" step="10" value="420"><output id="lpv">420 Hz</output></label>
+      <label class="knob">gain <input id="gain" type="range" min="0" max="2" step="0.05" value="1"><output id="gainv">1.00</output></label>
+    </dd>
+  </dl>
+
+  <section class="notes">
+    <div>
+      <p>Mu is born from the line itself. The line is the only drawn object; each muon is a Gaussian
+        wave packet displacing it along its normal, and two packets simply add, so a collision shows its
+        interference before the vertex flashes and tracks curl out of it like an event display.</p>
+      <p>Speech animates itself. The voice is routed through a four-pole low-pass filter into an
+        analyser, and the filtered waveform is stretched across the packet and summed with the carrier:</p>
+      <p class="eq">d(s) = g(s) · [ A cos(k s − ω t) + G · a<sub>LP</sub>(s) ]</p>
+      <p>Lower the cutoff and the packet sways with the voice’s fundamental; raise it and the consonants
+        start to fizz.</p>
+    </div>
+    <aside class="side">
+      <p>The dotted outline is the envelope ±A·g(s): the packet’s width σ and height A, drawn faint so the
+        line stays the subject.</p>
+      <p>Voices were synthesised with Kokoro-82M (<code>am_puck</code> for μ⁻, <code>af_bella</code> for μ⁺)
+        by <code>tools/synth_voices.py</code>.</p>
+      <p>A muon is 207 times heavier than an electron and lives 2.2 μs at rest.</p>
+    </aside>
+  </section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+<script src="muon.js"></script>
+<script>
+  const mu = MuonMascot.mount(document.getElementById('stage'), { voiceBase: 'voices/', autoBirth: true });
+
+  document.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', () => mu[b.dataset.act]()));
+
+  const shapesEl = document.getElementById('shapes');
+  const shapeNames = { flat: 'flat', hills: 'hills', wave: 'wave', ring: 'ring', loop: 'loop', mu: 'μ', heart: 'heart' };
+  mu.shapes.forEach(s => {
+    const b = document.createElement('button');
+    b.className = 'link'; b.textContent = shapeNames[s] || s;
+    b.setAttribute('aria-pressed', s === 'flat');
+    b.addEventListener('click', () => {
+      shapesEl.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b));
+      mu.morph(s);
+    });
+    shapesEl.appendChild(b);
+  });
+
+  mu.lines().then(list => {
+    const el = document.getElementById('lines');
+    el.textContent = '';
+    if (!list.length) { el.innerHTML = '<span class="side">Voice lines need a web server: run <code>python3 -m http.server</code> here.</span>'; return; }
+    list.forEach(l => {
+      const b = document.createElement('button');
+      b.className = 'link ' + (l.who === 'mu+' ? 'plus' : 'minus');
+      b.textContent = '“' + l.text.replace(/[.!]$/, '') + '”';
+      b.title = l.who + ' · ' + l.voice + ' · ' + l.seconds + ' s';
+      b.addEventListener('click', () => mu.say(l.id));
+      el.appendChild(b);
+    });
+  });
+
+  const lp = document.getElementById('lp'), gain = document.getElementById('gain');
+  lp.addEventListener('input', () => { mu.set('lowpass', +lp.value); document.getElementById('lpv').textContent = lp.value + ' Hz'; });
+  gain.addEventListener('input', () => { mu.set('speechGain', +gain.value); document.getElementById('gainv').textContent = (+gain.value).toFixed(2); });
+</script>
+</body>
+</html>
