@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mu capture</title>
+<!-- Used by tools/render_videos.js: renders frame by frame on demand, no controls. -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;1,400&display=swap">
+<style>
+  :root { --mu-paper: #fffff8; --mu-ink: #1d1d1b; --mu-minus: #b33a2a; --mu-plus: #2a64a0; }
+  html, body { margin: 0; background: var(--mu-paper); }
+  #stage canvas { display: block; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+<script src="muon.js"></script>
+<script>
+  const q = new URLSearchParams(location.search);
+  const stage = document.getElementById('stage');
+  stage.style.width = (+q.get('w') || 1280) + 'px';
+  const mu = window.__mu = MuonMascot.mount(stage, {
+    voiceBase: 'voices/', capture: { fps: +q.get('fps') || 30 }, background: true, seed: +q.get('seed') || 7,
+  });
+  window.__ready = Promise.all([mu.scene.voice.preload(), document.fonts.ready,
+    new Promise(r => (function poll() { mu.scene.p && mu.scene.p.canvas ? r() : setTimeout(poll, 20); })())]);
+  // advance n frames, letting promise chains settle between frames; optionally return the last frame
+  window.__step = async (n, grab) => {
+    for (let i = 0; i < n; i++) { mu.scene.p.redraw(); await new Promise(r => setTimeout(r, 0)); }
+    return grab ? mu.scene.p.canvas.toDataURL('image/png') : null;
+  };
+</script>
+</body>
+</html>

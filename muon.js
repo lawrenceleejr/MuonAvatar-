@@ -9,8 +9,8 @@
  *
  *   d(s) = g(s) · [ A cos(k s − ω t)  +  G · a_LP(s) ]
  *
- * where g is the envelope, and a_LP is the low-passed speech waveform from the Web Audio
- * analyser stretched across the packet. Speaking therefore animates itself.
+ * where g is the envelope, and a_LP is the low-passed speech waveform around the playhead,
+ * stretched across the packet. Speaking therefore animates itself.
  */
 (function (global) {
   'use strict';
@@ -23,7 +23,14 @@
   const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
   const lerp = (a, b, t) => a + (b - a) * t;
   const mod = (x, m) => ((x % m) + m) % m;
-  const rand = (a, b) => a + Math.random() * (b - a);
+  let seed = 0x9e3779b9;
+  const rnd = () => {   // mulberry32: reproducible, so a rendered video is the same every time
+    seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const rand = (a, b) => a + rnd() * (b - a);
 
   const Ease = {
     linear: t => t,
@@ -153,12 +160,32 @@
   }
 
   // ------------------------------------------------------------------ audio
+  // Speech is decoded once, low-passed in JS (two cascaded RBJ biquads = 4 poles), and read back at the
+  // playhead every frame. Reading by playhead rather than from an AnalyserNode keeps the animation
+  // frame-exact, which is what lets capture mode render video in sync with the voice.
+  function lowpass(x, sr, fc, Q = 0.6) {
+    const w = TAU * Math.min(fc, sr * 0.45) / sr, cw = Math.cos(w), al = Math.sin(w) / (2 * Q), a0 = 1 + al;
+    const b0 = (1 - cw) / 2 / a0, b1 = (1 - cw) / a0, b2 = b0, a1 = -2 * cw / a0, a2 = (1 - al) / a0;
+    let y = x;
+    for (let pass = 0; pass < 2; pass++) {
+      const out = new Float32Array(y.length);
+      let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+      for (let i = 0; i < y.length; i++) {
+        const v = b0 * y[i] + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+        x2 = x1; x1 = y[i]; y2 = y1; y1 = v; out[i] = v;
+      }
+      y = out;
+    }
+    return y;
+  }
+
   class Voice {
     constructor(base, opts) {
       this.base = base.endsWith('/') ? base : base + '/';
       this.opts = opts;
       this.ctx = null;
       this.cache = {};
+      this.filt = {};
       this.lines = {};
       this.ready = fetch(this.base + 'manifest.json')
         .then(r => r.json())
@@ -166,6 +193,7 @@
         .catch(() => []);
     }
     unlock() {
+      if (this.opts.capture) return null;
       if (!this.ctx) {
         const AC = global.AudioContext || global.webkitAudioContext;
         if (!AC) return null;
@@ -174,36 +202,62 @@
       if (this.ctx.state === 'suspended') this.ctx.resume();
       return this.ctx;
     }
-    async buffer(id) {
+    buffer(id) {
       const line = this.lines[id];
-      if (!line) throw new Error('unknown voice line: ' + id);
+      if (!line) return Promise.reject(new Error('unknown voice line: ' + id));
       if (!this.cache[id]) {
-        this.cache[id] = fetch(this.base + line.file).then(r => r.arrayBuffer()).then(b => this.ctx.decodeAudioData(b));
+        const OAC = global.OfflineAudioContext || global.webkitOfflineAudioContext;
+        const dec = new OAC(1, 1, 24000);
+        this.cache[id] = fetch(this.base + line.file).then(r => r.arrayBuffer()).then(b => dec.decodeAudioData(b));
       }
       return this.cache[id];
     }
-    async play(id) {
+    preload() { return this.ready.then(list => Promise.all(list.map(l => this.buffer(l.id)))); }
+    filtered(sp) {
+      const fc = Math.round(this.opts.lowpass / 10) * 10, key = sp.id + '@' + fc;
+      if (!this.filt[key]) this.filt[key] = lowpass(sp.buffer.getChannelData(0), sp.sr, fc);
+      return this.filt[key];
+    }
+    async start(id, scene) {
       await this.ready;
+      const buffer = await this.buffer(id);
+      const pitch = this.opts.pitch;
+      const sp = { id, line: this.lines[id], buffer, sr: buffer.sampleRate, dur: buffer.duration / pitch, src: null };
       const ctx = this.unlock();
-      if (!ctx) return null;
-      const buf = await this.buffer(id);
-      const src = ctx.createBufferSource();
-      src.buffer = buf;
-      src.playbackRate.value = this.opts.pitch;
-      // two cascaded biquads = a 4-pole low-pass: keep the fundamental and the first harmonics
-      const lp1 = ctx.createBiquadFilter(), lp2 = ctx.createBiquadFilter();
-      lp1.type = lp2.type = 'lowpass';
-      lp1.frequency.value = lp2.frequency.value = this.opts.lowpass;
-      lp1.Q.value = lp2.Q.value = 0.6;
-      const an = ctx.createAnalyser();
-      an.fftSize = this.opts.speechWindow;
-      src.connect(ctx.destination);
-      src.connect(lp1); lp1.connect(lp2); lp2.connect(an);
-      const ended = new Promise(res => (src.onended = res));
-      src.start();
-      return { src, analyser: an, filters: [lp1, lp2], ended, line: this.lines[id] };
+      if (ctx && ctx.state !== 'running') await Promise.race([ctx.resume(), new Promise(r => setTimeout(r, 300))]);
+      if (ctx && ctx.state === 'running') {
+        const src = ctx.createBufferSource();
+        src.buffer = buffer; src.playbackRate.value = pitch; src.connect(ctx.destination);
+        const t0 = ctx.currentTime + 0.02;
+        src.start(t0);
+        sp.src = src;
+        sp.pos = () => Math.max(0, (ctx.currentTime - t0) * pitch);
+        sp.ended = new Promise(res => (src.onended = res));
+      } else {
+        // silent (capture, or before the visitor has clicked): run on the scene clock
+        const t0 = scene.t;
+        sp.pos = () => (scene.t - t0) * pitch;
+        sp.ended = scene.until(() => scene.t >= t0 + sp.dur);
+        scene.log.push({ id, file: sp.line.file, t: t0, pitch });
+      }
+      return sp;
     }
   }
+
+  // ------------------------------------------------------------------ faces
+  // Each mood is a target pose; the face springs toward it, so changes overshoot and settle.
+  // lid/low: upper and lower eyelid cover (0–1); tilt: lid slant (+ = inner corner down);
+  // browY: brow lift (px); browA: brow slant (+ = angry); asym: extra lift on one brow.
+  const MOODS = {
+    normal:     { lid: 0.16, tilt: 0,     low: 0,    browY: 0,   browA: 0.05,  pupil: 1,    size: 1,    asym: 0 },
+    happy:      { lid: 0.04, tilt: -0.05, low: 0.56, browY: 5,   browA: -0.15, pupil: 1.05, size: 1.02, asym: 0 },
+    surprised:  { lid: 0,    tilt: 0,     low: 0,    browY: 12,  browA: -0.08, pupil: 0.6,  size: 1.18, asym: 0 },
+    determined: { lid: 0.38, tilt: 0.4,   low: 0.2,  browY: -4,  browA: 0.55,  pupil: 0.85, size: 0.95, asym: 0 },
+    sleepy:     { lid: 0.56, tilt: -0.1,  low: 0.12, browY: -2,  browA: -0.1,  pupil: 0.95, size: 0.98, asym: 0 },
+    sad:        { lid: 0.3,  tilt: -0.34, low: 0,    browY: 3,   browA: -0.5,  pupil: 1.18, size: 1,    asym: 0 },
+    smug:       { lid: 0.44, tilt: 0.04,  low: 0.26, browY: 0,   browA: 0.12,  pupil: 0.9,  size: 1,    asym: 9 },
+    dizzy:      { lid: 0.12, tilt: 0,     low: 0,    browY: 6,   browA: -0.3,  pupil: 1,    size: 1.05, asym: 0 },
+  };
 
   // ------------------------------------------------------------------ one muon
   class Muon {
@@ -218,7 +272,10 @@
       this.look = { x: 0, y: 0 }; this.lookAt = null;
       this.jump = 0; this.jumpV = 0; this.airborne = false;
       this.alive = false;
-      this.speech = null; this.buf = null; this.peak = 0.05; this.rms = 0; this.talk = 0;
+      this.speech = null; this.win = null; this.peak = 0.05; this.rms = 0; this.talk = 0;
+      this.ex = {}; this.exv = {};
+      for (const k in MOODS.normal) { this.ex[k] = MOODS.normal[k]; this.exv[k] = 0; }
+      this.wink = 0; this.sacc = { x: 0, y: 0 }; this.nextSacc = 1;
       this.caption = ''; this.captionA = 0;
       this.label = 0;
     }
@@ -233,7 +290,13 @@
         voiceBase: 'voices/',
         lowpass: 420,          // Hz, speech low-pass before it is added to the packet
         speechGain: 1.0,       // G: speech amplitude relative to the packet amplitude
-        speechWindow: 1024,    // analyser samples stretched across the packet
+        speechWindow: 40,      // ms of low-passed speech stretched across the packet
+        wobble: 1.3,           // hand-drawn line: jitter (design px)
+        boilFps: 10,           // how often the hand-drawn wobble is redrawn
+        inkWeight: 2.6,        // line weight (design px)
+        capture: null,         // { fps } renders on demand for video; see tools/render_videos.js
+        background: null,      // fill colour; null keeps the canvas transparent
+        seed: 7,
         pitch: 1.0,            // playbackRate for voice lines
         carrier: 0.19,         // k, rad per design px
         showEnvelope: true,
@@ -242,6 +305,8 @@
         autoBirth: false,
         colors: null,
       }, opts || {});
+      seed = this.o.seed >>> 0;
+      this.log = [];
       this.clock = new Clock();
       this.voice = new Voice(this.o.voiceBase, this.o);
       this.epoch = 0;
@@ -337,8 +402,10 @@
       await g(Promise.all([
         this.tween(m, { amp: 34, sigma: 34 }, quick ? 0.6 : 1.1, Ease.outElastic),
       ]));
+      m.mood = quick ? 'normal' : 'sleepy';
       await g(this.tween(m, { eye: 1 }, 0.5, Ease.outBack));
       await g(this.tween(m, { blink: 0 }, 0.18, Ease.out));
+      if (!quick) { await g(this.wait(0.35)); m.mood = 'surprised'; await g(this.wait(0.5)); m.mood = 'normal'; }
       if (!quick) {
         m.lookAt = { x: -1, y: 0 }; await g(this.wait(0.45));
         m.lookAt = { x: 1, y: 0 }; await g(this.wait(0.45));
@@ -367,16 +434,16 @@
       if (!m.alive) return;
       this.stopSpeech(m);
       let s = null;
-      try { s = await this.voice.play(id); } catch (e) { console.warn(e); }
+      try { s = await this.voice.start(id, this); } catch (e) { console.warn(e); }
       if (!s) return;
-      m.speech = s; m.buf = new Float32Array(s.analyser.fftSize); m.peak = 0.05;
-      m.caption = this.o.captions && s.line ? s.line.text : '';
+      m.speech = s; m.peak = 0.05;
+      m.caption = this.o.captions && s.line ? s.line.text : ''; m.captionQuote = true;
       await s.ended;
       if (m.speech === s) m.speech = null;
     }
 
     stopSpeech(m) {
-      if (m.speech) { try { m.speech.src.stop(); } catch (e) { /* already stopped */ } m.speech = null; }
+      if (m.speech) { try { m.speech.src && m.speech.src.stop(); } catch (e) { /* already stopped */ } m.speech = null; }
     }
 
     ripple(u, amp = 10, life = 1.6, k = 0.08) { this.ripples.push({ u, amp, life, age: 0, k, c: 380 }); }
@@ -385,10 +452,10 @@
       const tracks = [];
       const n = 14;
       for (let i = 0; i < n; i++) {
-        const charged = Math.random() < 0.8;
+        const charged = rnd() < 0.8;
         tracks.push({
           a: rand(0, TAU), k: charged ? rand(-0.012, 0.012) : 0, kk: charged ? rand(-0.00004, 0.00004) : 0,
-          L: rand(80, 260), col: charged ? (Math.random() < 0.5 ? 'mu' : 'anti') : 'ink', dashed: !charged,
+          L: rand(80, 260), col: charged ? (rnd() < 0.5 ? 'mu' : 'anti') : 'ink', dashed: !charged,
         });
       }
       this.events.push({ x, y, age: 0, life: 2.6, tracks });
@@ -407,7 +474,7 @@
         }
         if (this.reveal < 1) await g(this.tween(this, { reveal: 1 }, 1.0, Ease.inOut));
         await this._birth(this.mu[0], g, 0.5);
-        this.voice.unlock() && this.speak(this.mu[0], 'hello');
+        this.speak(this.mu[0], 'hello');
         await g(this.wait(2.2));
         return this._wander(g);
       });
@@ -423,14 +490,14 @@
     async _wander(g) {
       const loops = this.mu.filter(m => m.alive).map(m => (async () => {
         for (;;) {
-          const r = Math.random();
+          const r = rnd();
           if (r < 0.2) { await g(this.hopOnce(m, rand(0.7, 1.2))); }
           else if (r < 0.32) { m.mood = 'happy'; await g(this.wait(rand(0.6, 1.2))); m.mood = 'normal'; }
           else {
             let tgt = this.closed ? m.u + rand(-0.6, 0.6) : rand(0.08, 0.92);
             tgt = this.offGlyph(tgt);
             await g(this.moveTo(m, tgt, rand(0.12, 0.3)));
-            if (Math.random() < 0.3) await g(this.hopOnce(m, rand(0.5, 1)));
+            if (rnd() < 0.3) await g(this.hopOnce(m, rand(0.5, 1)));
           }
           await g(this.wait(rand(0.3, 1.4)));
         }
@@ -480,7 +547,8 @@
         const legs = [['hills', 0.88], ['wave', 0.15], ['loop', 0.9], ['ring', 1.6], ['mu', 0.9], ['flat', 0.5]];
         for (const [shape, to] of legs) {
           this.morph(shape);
-          if (shape === 'ring') this.speak(m, 'ring');
+          if (shape === 'ring') { this.speak(m, 'ring'); m.mood = 'happy'; }
+          if (shape === 'loop') { m.mood = 'surprised'; this.clock.wait(1.2).then(() => (m.mood = 'normal')); }
           if (shape === 'mu') { m.u = mod(m.u, 1); this.speak(m, 'mu'); }
           await g(this.moveTo(m, to, 0.32));
           if (shape === 'mu') { m.lookAt = { x: -1, y: -0.3 }; m.mood = 'happy'; await g(this.wait(1.2)); m.mood = 'normal'; m.lookAt = null; }
@@ -526,14 +594,17 @@
         const B = this._buf;
         this.burst(B.bx[i] + B.nx[i] * 20, B.by[i] + B.ny[i] * 20);
         this.ripple(uc, 16, 2.2, 0.05);
-        a.mood = b.mood = 'dizzy'; a.dizzy = b.dizzy = 1;
+        a.mood = b.mood = 'surprised';
+        this.clock.wait(0.25).then(() => { if (a.mood === 'surprised') { a.mood = b.mood = 'dizzy'; a.dizzy = b.dizzy = 1; } });
         a.accel = b.accel = 6;
         a.vel = -0.7; b.vel = 0.7;
         a.target = uc - 0.24; b.target = uc + 0.24; a.maxSpeed = b.maxSpeed = 0.5;
         a.jumpV = 280; b.jumpV = 280; a.airborne = b.airborne = true;
         this.tween(a, { amp: 34, sigma: 34 }, 0.9, Ease.outElastic); this.tween(b, { amp: 34, sigma: 34 }, 0.9, Ease.outElastic);
         await g(this.wait(1.6));
+        self.mood = 'sad'; anti.mood = 'normal';
         await g(this.speak(self, 'ouch'));
+        anti.mood = 'smug'; self.mood = 'normal';
         await g(this.speak(anti, 'anti_ouch'));
         a.mood = b.mood = 'happy';
         await g(this.wait(1));
@@ -541,6 +612,37 @@
         return this._wander(g);
       });
     }
+
+    faces() {
+      // a tour of the expressions, each labelled, for design review
+      return this.act(async g => {
+        await this._ensureAlive(g);
+        const m = this.mu[0];
+        await g(this.moveTo(m, 0.5, 0.4));
+        const show = async (mood, sec, lookAt = null) => {
+          m.mood = mood; m.lookAt = lookAt; m.caption = mood; m.captionQuote = false; m.captionHold = sec;
+          await g(this.wait(sec));
+        };
+        await show('normal', 1.4);
+        await show('happy', 1.4);
+        await show('surprised', 1.3);
+        await show('determined', 1.4, { x: 1, y: 0 });
+        await show('sleepy', 1.6);
+        await show('sad', 1.4, { x: -0.3, y: 0.5 });
+        await show('smug', 1.2, { x: 0.8, y: -0.1 });
+        m.caption = 'wink'; m.captionQuote = false; m.captionHold = 1.4;
+        await g(this.tween(m, { wink: 1 }, 0.12, Ease.in)); await g(this.wait(0.25));
+        await g(this.tween(m, { wink: 0 }, 0.18, Ease.out)); await g(this.wait(0.7));
+        await show('dizzy', 1.6); m.dizzy = 1;
+        m.lookAt = null;
+        await show('normal', 1.0);
+        for (const [x, y] of [[-1, 0], [1, -0.6], [0.2, 0.8], [0, 0]]) { m.lookAt = { x, y }; await g(this.wait(0.35)); }
+        m.lookAt = null;
+        return this._wander(g);
+      });
+    }
+
+    emote(mood) { this.mu.forEach(m => { if (m.alive && MOODS[mood]) m.mood = mood; }); }
 
     stop() {
       return this.act(async () => { this.mu.forEach(m => this.stopSpeech(m)); });
@@ -551,11 +653,13 @@
       this.p = p;
       p.setup = () => {
         const w = this.el.clientWidth || 800;
-        p.createCanvas(w, (w * DH) / DW);
+        p.createCanvas(w, Math.round((w * DH) / DW));
+        p.noiseSeed(this.o.seed); p.noiseDetail(2, 0.45);
+        if (this.o.capture) { p.pixelDensity(1); p.resizeCanvas(w, Math.round((w * DH) / DW)); p.noLoop(); }
         p.strokeCap(p.ROUND);
         p.strokeJoin(p.ROUND);
         if (this.o.autoBirth) this.birth();
-        else this.tween(this, { reveal: 1 }, 1.2, Ease.inOut);
+        else if (!this.o.capture) this.tween(this, { reveal: 1 }, 1.2, Ease.inOut);
       };
       p.windowResized = () => {
         const w = this.el.clientWidth || 800;
@@ -566,7 +670,7 @@
         this.mouse = (p.mouseX >= 0 && p.mouseY >= 0 && p.mouseX <= p.width && p.mouseY <= p.height) ? { x: p.mouseX / s, y: p.mouseY / s } : null;
       };
       p.draw = () => {
-        const dt = Math.min(0.05, p.deltaTime / 1000 || 1 / 60);
+        const dt = this.o.capture ? 1 / (this.o.capture.fps || 30) : Math.min(0.05, p.deltaTime / 1000 || 1 / 60);
         this.update(dt);
         this.render(p);
       };
@@ -651,7 +755,7 @@
         // blink
         m.nextBlink -= dt;
         if (m.nextBlink <= 0 && m.eye > 0.9 && m.mood !== 'dizzy') {
-          m.nextBlink = rand(2, 5.5) * (Math.random() < 0.15 ? 0.1 : 1);
+          m.nextBlink = rand(2, 5.5) * (rnd() < 0.15 ? 0.1 : 1);
           this.tween(m, { blink: 1 }, 0.07, Ease.in).then(() => this.tween(m, { blink: 0 }, 0.11, Ease.out));
         }
         if (m.dizzy > 0 && m.mood !== 'dizzy') m.dizzy = Math.max(0, m.dizzy - dt);
@@ -667,28 +771,45 @@
           } else if (other.alive) {
             lx = Math.sign(this.pos(other) - this.pos(m)) * 0.7; ly = 0;
           } else { lx = 0.2 * Math.sin(this.t * 0.7); ly = 0.15; }
+          // saccades: small quick darts, the way real eyes rest
+          m.nextSacc -= dt;
+          if (m.nextSacc <= 0) { m.nextSacc = rand(0.5, 1.8); m.sacc = { x: rand(-0.25, 0.25), y: rand(-0.2, 0.2) }; }
+          lx += m.sacc.x; ly += m.sacc.y;
         }
-        m.look.x += (lx - m.look.x) * Math.min(1, dt * 10);
-        m.look.y += (ly - m.look.y) * Math.min(1, dt * 10);
+        m.look.x += (lx - m.look.x) * Math.min(1, dt * 18);
+        m.look.y += (ly - m.look.y) * Math.min(1, dt * 18);
 
-        // speech: low-passed waveform from the analyser
+        // face springs toward the mood's pose
+        const pose = MOODS[m.mood] || MOODS.normal;
+        for (const k in pose) {
+          let tgt = pose[k];
+          if (k === 'browY') tgt += m.rms * 90 + (m.airborne ? 4 : 0);
+          if (k === 'size') tgt += m.rms * 0.5;
+          m.exv[k] += ((tgt - m.ex[k]) * 160 - m.exv[k] * 13) * dt;
+          m.ex[k] += m.exv[k] * dt;
+        }
+
+        // speech: the low-passed waveform just behind the playhead
+        m.win = null;
         if (m.speech) {
-          m.speech.analyser.getFloatTimeDomainData(m.buf);
+          const sp = m.speech, data = this.voice.filtered(sp);
+          const W = Math.max(8, Math.round(this.o.speechWindow / 1000 * sp.sr));
+          const end = Math.floor(sp.pos() * sp.sr), start = end - W;
           let pk = 0, ss = 0;
-          for (let i = 0; i < m.buf.length; i++) { const v = m.buf[i]; ss += v * v; if (Math.abs(v) > pk) pk = Math.abs(v); }
-          m.rms = Math.sqrt(ss / m.buf.length);
+          for (let i = Math.max(0, start); i < Math.min(data.length, end); i++) { const v = data[i]; ss += v * v; if (Math.abs(v) > pk) pk = Math.abs(v); }
+          m.rms += (Math.sqrt(ss / W) - m.rms) * Math.min(1, dt * 25);
           m.peak = Math.max(pk, m.peak * Math.exp(-dt / 1.2), 0.04);
-          m.speech.filters.forEach(f => (f.frequency.value = this.o.lowpass));
+          m.win = { data, start, W };
         } else { m.rms *= Math.exp(-dt * 10); }
         m.talk += ((m.speech ? 1 : 0) - m.talk) * Math.min(1, dt * 8);
-        m.captionHold = m.speech ? 1.1 : (m.captionHold || 0) - dt;
+        m.captionHold = m.speech ? Math.max(1.1, m.captionHold || 0) : (m.captionHold || 0) - dt;
         m.captionA += ((m.captionHold > 0 ? 1 : 0) - m.captionA) * Math.min(1, dt * 6);
         m.label += ((m.eye > 0.9 ? 1 : 0) - m.label) * Math.min(1, dt * 2);
 
         // superpose this packet onto the line
         const s0 = this.pos(m) * L;
         const reach = 4 * m.sigma;
-        const win = m.buf ? m.buf.length : 0;
+        const w = m.win;
         const G = this.o.speechGain * m.talk;
         const A = m.amp * (1 - 0.35 * m.talk);
         for (let i = 0; i < N; i++) {
@@ -697,11 +818,12 @@
           if (ds < -reach || ds > reach) continue;
           const gsn = Math.exp(-(ds * ds) / (2 * m.sigma * m.sigma));
           let d = A * Math.cos(this.o.carrier * ds - m.phase);
-          if (G > 0.001 && win) {
-            // stretch the analyser window across ±reach; samples flow toward the direction of travel
-            const f = clamp(((ds * m.dir) / reach + 1) / 2, 0, 0.9999) * (win - 1);
-            const j = f | 0, fr = f - j;
-            const a = (m.buf[j] * (1 - fr) + m.buf[j + 1] * fr) / m.peak;
+          if (G > 0.001 && w) {
+            // stretch the window across ±reach; the newest sample leads in the direction of travel
+            const f = clamp(((ds * m.dir) / reach + 1) / 2, 0, 0.9999) * (w.W - 1);
+            const j = w.start + (f | 0), fr = f - (f | 0);
+            const at = q => (q >= 0 && q < w.data.length ? w.data[q] : 0);
+            const a = (at(j) * (1 - fr) + at(j + 1) * fr) / m.peak;
             d += G * m.amp * 1.7 * a;
           }
           B.D[i] += gsn * d;
@@ -722,7 +844,7 @@
     // ------------------------------------------------------------------ drawing
     render(p) {
       const B = this._buf, c = this.c, s = p.width / DW;
-      p.clear();
+      if (this.o.background) p.background(this.o.background === true ? c.paper : this.o.background); else p.clear();
       p.push();
       p.scale(s);
       if (this.shake > 0) p.translate(rand(-1, 1) * 4 * this.shake, rand(-1, 1) * 4 * this.shake);
@@ -735,8 +857,9 @@
         this.mu.forEach(m => {
           if (!m.alive || m.amp < 1) return;
           const col = p.color(c[m.color]); col.setAlpha(70 * Math.min(1, m.eye));
-          p.stroke(col); p.strokeWeight(0.8); p.noFill();
-          const L = B.S[N - 1], s0 = this.pos(m) * L;
+          p.stroke(col); p.strokeWeight(0.9); p.noFill();
+          p.drawingContext.setLineDash([1.5, 4.5]);
+          const L = B.S[N - 1], s0 = this.pos(m) * L, tb = Math.floor(this.t * this.o.boilFps);
           for (const sgn of [1, -1]) {
             p.beginShape();
             let open = false;
@@ -744,27 +867,58 @@
               let ds = B.S[i] - s0;
               if (this.closed) ds = mod(ds + L / 2, L) - L / 2;
               if (Math.abs(ds) > 3 * m.sigma) { if (open) { p.endShape(); p.beginShape(); open = false; } continue; }
-              const e = sgn * (m.amp + 3) * Math.exp(-(ds * ds) / (2 * m.sigma * m.sigma));
+              const e = sgn * (m.amp + 3) * Math.exp(-(ds * ds) / (2 * m.sigma * m.sigma)) + (p.noise(i * 0.05, tb * 2 + sgn * 9) - 0.5) * 3;
               p.vertex(B.bx[i] + B.nx[i] * e, B.by[i] + B.ny[i] * e); open = true;
             }
             p.endShape();
           }
+          p.drawingContext.setLineDash([]);
         });
       }
 
-      // the line itself
-      const half = this.reveal / 2;
-      const ink = p.color(c.ink), cols = [p.color(c.mu), p.color(c.anti)];
-      p.noFill();
-      for (let i = 0; i < N - 1; i++) {
-        const u = i / (N - 1);
-        if (Math.abs(u - 0.5) > half) continue;
-        const w = B.W[i];
-        const col = w > 0.02 && B.C[i] >= 0 ? p.lerpColor(ink, cols[B.C[i]], Math.min(1, w * 1.6)) : ink;
-        p.stroke(col);
-        p.strokeWeight(2 + 1.6 * w);
-        p.line(B.bx[i] + B.nx[i] * B.D[i], B.by[i] + B.ny[i] * B.D[i], B.bx[i + 1] + B.nx[i + 1] * B.D[i + 1], B.by[i + 1] + B.ny[i + 1] * B.D[i + 1]);
+      // the line itself, hand-drawn: the wobble is re-drawn a few times a second ("boil"),
+      // pen pressure varies along the stroke, and a faint pencil line runs underneath
+      const ctx = p.drawingContext, L = B.S[N - 1];
+      const tb = Math.floor(this.t * this.o.boilFps), wob = this.o.wobble;
+      const half = this.reveal / 2, sLo = (0.5 - half) * L, sHi = (0.5 + half) * L;
+      const seamless = this.closed && this.reveal >= 1 && !this.morphState;
+      const rgb = h => { const q = p.color(h); return [p.red(q), p.green(q), p.blue(q)]; };
+      const ink = rgb(c.ink), cols = [rgb(c.mu), rgb(c.anti)];
+      const X = B.X || (B.X = new Float32Array(N)), Y = B.Y || (B.Y = new Float32Array(N));
+      const X2 = B.X2 || (B.X2 = new Float32Array(N)), Y2 = B.Y2 || (B.Y2 = new Float32Array(N));
+      for (let i = 0; i < N; i++) {
+        const sv = B.S[i], d = B.D[i];
+        const j = (p.noise(sv * 0.011, tb * 3.1) - 0.5) * 5 * wob;
+        const j2 = (p.noise(sv * 0.017 + 300, tb * 2.3) - 0.5) * 7 * wob;
+        X[i] = B.bx[i] + B.nx[i] * (d + j); Y[i] = B.by[i] + B.ny[i] * (d + j);
+        X2[i] = B.bx[i] + B.nx[i] * (d + j2) + 0.6; Y2[i] = B.by[i] + B.ny[i] * (d + j2) + 0.8;
       }
+      ctx.save();
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      // pencil underdraw, a little shorter than the inked line at each end
+      const pad = 18 + 14 * p.noise(tb * 0.7);
+      ctx.strokeStyle = `rgba(${ink[0]},${ink[1]},${ink[2]},0.28)`; ctx.lineWidth = 0.9;
+      ctx.beginPath();
+      let started = false;
+      for (let i = 0; i < N; i++) {
+        if (B.S[i] < sLo + pad || B.S[i] > sHi - pad) { started = false; continue; }
+        if (!started) { ctx.moveTo(X2[i], Y2[i]); started = true; } else ctx.lineTo(X2[i], Y2[i]);
+      }
+      ctx.stroke();
+      // ink
+      for (let i = 0; i < N - 1; i++) {
+        const sv = B.S[i];
+        if (sv < sLo || B.S[i + 1] > sHi + 1e-3) continue;
+        const dEnd = seamless ? 1e9 : Math.min(sv - sLo, sHi - sv);
+        const taper = Math.pow(clamp(dEnd / 45, 0.12, 1), 0.6);
+        const pressure = 0.72 + 0.6 * p.noise(sv * 0.004 + 40, tb * 0.7);
+        const w = B.W[i], ci = B.C[i];
+        const k = w > 0.02 && ci >= 0 ? Math.min(1, w * 1.6) : 0, cc = k ? cols[ci] : ink;
+        ctx.strokeStyle = `rgb(${lerp(ink[0], cc[0], k) | 0},${lerp(ink[1], cc[1], k) | 0},${lerp(ink[2], cc[2], k) | 0})`;
+        ctx.lineWidth = this.o.inkWeight * pressure * taper * (1 + 0.45 * w);
+        ctx.beginPath(); ctx.moveTo(X[i], Y[i]); ctx.lineTo(X[i + 1], Y[i + 1]); ctx.stroke();
+      }
+      ctx.restore();
 
       this.mu.forEach(m => m.alive && this.drawFace(p, m));
       p.pop();
@@ -797,56 +951,97 @@
     }
 
     drawFace(p, m) {
-      const c = this.c, a = this.anchor(m);
+      const c = this.c, a = this.anchor(m), ex = m.ex;
       const tilt = clamp(Math.atan2(-a.nx, a.ny) + Math.PI, -Math.PI, Math.PI);
       const up = Math.abs(tilt) > Math.PI / 2 ? tilt - Math.sign(tilt) * Math.PI : tilt; // keep faces roughly upright
       const t = this.t;
       const bob = Math.sin(t * 2.4 + m.phase * 0.05) * 1.5;
+      const lean = clamp(m.vel * 1.1, -0.28, 0.28);           // lean into the direction of travel
       p.push();
       p.translate(a.x, a.y + bob);
-      p.rotate(clamp(-up * 0.45, -0.5, 0.5));
+      p.rotate(clamp(-up * 0.45, -0.5, 0.5) + lean);
       p.scale(m.eye * m.sx, m.eye * m.sy);
-
-      const gap = 15, R = 11.5;
-      const ink = p.color(c.ink), paper = p.color(c.paper), tint = p.color(c[m.color]);
+      const ctx = p.drawingContext;
+      const tb = Math.floor(t * this.o.boilFps);
+      const paper = c.paper, ink = c.ink;
+      const lidCol = p.lerpColor(p.color(paper), p.color(c[m.color]), 0.55).toString();
+      const R = 12.5, gap = 16.5 + Math.abs(m.vel) * 6;
       for (const side of [-1, 1]) {
-        p.push();
-        p.translate(side * gap, 0);
-        const mood = m.mood;
-        p.strokeWeight(2); p.stroke(ink);
-        if (mood === 'happy') {
-          p.noFill();
-          p.arc(0, 3, R * 1.7, R * 1.6, Math.PI + 0.25, TAU - 0.25);
-        } else {
-          const open = 1 - m.blink;
-          const big = mood === 'surprised' ? 1.25 : 1;
-          const rx = R * big, ry = R * big * Math.max(0.08, open) * (1 + m.talk * 0.12 * Math.sin(t * 22));
-          p.fill(paper);
-          p.ellipse(0, 0, rx * 2, ry * 2);
-          if (open > 0.2) {
-            if (mood === 'dizzy' || m.dizzy > 0.3) {
-              p.noFill(); p.stroke(tint); p.strokeWeight(1.4);
-              p.beginShape();
-              for (let q = 0; q < 34; q++) {
-                const th = q * 0.55 + t * 9 * side, rr = q * 0.24;
-                p.vertex(Math.cos(th) * rr, Math.sin(th) * rr * open);
-              }
-              p.endShape();
-            } else {
-              const px = m.look.x * R * 0.45, py = m.look.y * R * 0.4 * open;
-              const pr = mood === 'surprised' ? 3.4 : 5.2;
-              p.noStroke(); p.fill(ink);
-              p.ellipse(px, py, pr * 2, pr * 2 * Math.min(1, open * 1.3));
-              p.fill(paper);
-              p.circle(px + 1.8, py - 1.8 * open, 2.2);
-            }
-          }
-          if (mood === 'determined') {
-            p.stroke(ink); p.strokeWeight(2.4);
-            p.line(-R * 0.9, -R * 1.15 - side * 2, R * 0.9, -R * 1.15 + side * 4);
-          }
+        // the leading eye is a touch bigger, and the two are never quite identical
+        const lead = 1 + 0.07 * side * m.dir * Math.min(1, Math.abs(m.vel) * 5);
+        const sz = ex.size * lead * (side < 0 ? 1 : 0.94);
+        const rx = R * 0.88 * sz, ry = R * 1.12 * sz;
+        ctx.save();
+        ctx.translate(side * gap, side > 0 ? 1 : 0);
+        // wobbly outline, boiling with the line
+        const eyePath = new Path2D();
+        for (let q = 0; q <= 30; q++) {
+          const th = (q / 30) * TAU, w = 1 + (p.noise(q % 30 * 0.4 + side * 17, tb * 1.9) - 0.5) * 0.11;
+          const x = Math.cos(th) * rx * w, y = Math.sin(th) * ry * w;
+          q ? eyePath.lineTo(x, y) : eyePath.moveTo(x, y);
         }
-        p.pop();
+        eyePath.closePath();
+        ctx.fillStyle = paper; ctx.fill(eyePath);
+        ctx.save();
+        ctx.clip(eyePath);
+        // pupil
+        if (m.mood === 'dizzy' || m.dizzy > 0.3) {
+          ctx.strokeStyle = c[m.color]; ctx.lineWidth = 1.5; ctx.beginPath();
+          for (let q = 0; q < 36; q++) {
+            const th = q * 0.55 + t * 9 * side, rr = q * 0.27;
+            q ? ctx.lineTo(Math.cos(th) * rr, Math.sin(th) * rr) : ctx.moveTo(0, 0);
+          }
+          ctx.stroke();
+        } else {
+          const pr = rx * 0.56 * ex.pupil;
+          // a slight inward pull when looking close makes the gaze feel focused
+          const px = m.look.x * (rx - pr * 0.75) - side * 0.6, py = m.look.y * (ry - pr * 0.8);
+          ctx.fillStyle = ink; ctx.beginPath(); ctx.ellipse(px, py, pr, pr * 1.06, 0, 0, TAU); ctx.fill();
+          ctx.fillStyle = paper;
+          ctx.beginPath(); ctx.arc(px + pr * 0.34, py - pr * 0.4, pr * 0.32, 0, TAU); ctx.fill();
+          ctx.beginPath(); ctx.arc(px - pr * 0.32, py + pr * 0.36, pr * 0.13, 0, TAU); ctx.fill();
+        }
+        ctx.strokeStyle = ink; ctx.lineWidth = 1.8; ctx.fillStyle = lidCol;
+        // upper lid: sweeps down to blink, slants with the mood
+        const wink = side > 0 ? m.wink : 0;
+        const lid = Math.max(ex.lid, m.blink, wink);
+        if (lid > 0.01) {
+          ctx.save();
+          ctx.translate(0, -ry + 2.05 * ry * lid);
+          ctx.rotate(-side * ex.tilt);
+          ctx.beginPath();
+          ctx.moveTo(-2 * rx, -4 * ry); ctx.lineTo(2 * rx, -4 * ry); ctx.lineTo(2 * rx, 0);
+          ctx.quadraticCurveTo(0, 2.2 * Math.min(1, lid * 3), -2 * rx, 0); ctx.closePath();
+          ctx.fill();
+          ctx.beginPath(); ctx.moveTo(-2 * rx, 0); ctx.quadraticCurveTo(0, 2.2 * Math.min(1, lid * 3), 2 * rx, 0); ctx.stroke();
+          ctx.restore();
+        }
+        // lower lid: rises into a smile
+        if (ex.low > 0.01) {
+          const yb = ry * (1 - 1.75 * ex.low);
+          ctx.beginPath();
+          ctx.moveTo(-2 * rx, ry * 2); ctx.lineTo(-1.2 * rx, ry * 0.9);
+          ctx.quadraticCurveTo(0, yb - ry * 0.55 * ex.low, 1.2 * rx, ry * 0.9);
+          ctx.lineTo(2 * rx, ry * 2); ctx.closePath();
+          ctx.fill(); ctx.stroke();
+        }
+        ctx.restore();
+        ctx.strokeStyle = ink; ctx.lineWidth = 2.1; ctx.stroke(eyePath);
+        // brow: a tapered stroke that lifts with loud syllables
+        const by = -ry - 7 - ex.browY - (side > 0 ? ex.asym : 0);
+        ctx.save();
+        ctx.translate(side * 1.5, by);
+        ctx.rotate(-side * ex.browA);
+        const bw = rx * 1.05, arch = 3 + ex.browY * 0.15;
+        const jy = (p.noise(side * 5, tb * 1.3) - 0.5) * 1.6;
+        ctx.fillStyle = ink;
+        ctx.beginPath();
+        ctx.moveTo(-bw, 1 + jy);
+        ctx.quadraticCurveTo(0, -arch - 2.2, bw, 1 - jy);
+        ctx.quadraticCurveTo(0, -arch + 1.4, -bw, 1 + jy);
+        ctx.fill();
+        ctx.restore();
+        ctx.restore();
       }
       p.pop();
 
@@ -866,7 +1061,7 @@
         const cx = clamp(a.x, 170, DW - 170);
         const above = a.y > 90;
         p.textAlign(p.CENTER, above ? p.BOTTOM : p.TOP);
-        p.text('“' + m.caption + '”', cx, above ? a.y - 30 - 6 * m.captionA : a.y + 40);
+        p.text(m.captionQuote === false ? m.caption : '“' + m.caption + '”', cx, above ? a.y - 30 - 6 * m.captionA : a.y + 40);
       }
     }
   }
@@ -882,6 +1077,9 @@
       hop: () => scene.hop(),
       say: id => scene.say(id),
       ride: () => scene.ride(),
+      faces: () => scene.faces(),
+      emote: mood => scene.emote(mood),
+      moods: Object.keys(MOODS),
       morph: name => scene.morph(name),
       collide: () => scene.collide(),
       stop: () => scene.stop(),
