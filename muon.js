@@ -475,14 +475,20 @@
     async boop(m) {
       if (!m.alive || m.booping) return;
       m.booping = true;
-      const was = m.mood;
+      const was = m.mood, prevShot = this.shot;
+      m.target = null; m.vel = 0;
+      // lock the camera on him first: perspective magnifies any offset from the frame centre,
+      // so a leap at the viewer must start on the camera's axis or he flies out of frame
+      const w = this.anchorWorld(m, false);
+      this.shot = { wide: true, fx: w.x, fy: w.y, fz: w.z, zoom: 1, yaw: this.cam.yaw * 0.3, pitch: 0.08, roll: 0, K: 90, D: 16 };
       m.mood = 'surprised'; m.sx = 1.3; m.sy = 0.7;
-      await this.tween(m, { zPush: -80, amp: AMP * 0.6 }, 0.22, Ease.out);      // wind up into the page
+      await this.tween(m, { zPush: -80, amp: AMP * 0.6 }, 0.32, Ease.out);      // wind up into the page
       m.mood = 'happy';
-      await this.tween(m, { zPush: 660, amp: AMP * 1.3 }, 0.3, Ease.in);       // and out at you
-      this.shake = 1; m.sx = 1.5; m.sy = 0.6; this.camV.zoom -= 2.5; this.camV.roll += 0.8;
+      await this.tween(m, { zPush: 540, amp: AMP * 1.3 }, 0.28, Ease.in);       // and out at you
+      this.shake = 1; m.sx = 1.5; m.sy = 0.6; this.camV.zoom -= 1.5; this.camV.roll += 0.6;
       await this.wait(0.6);
       await this.tween(m, { zPush: 0, amp: AMP }, 1.0, Ease.outElastic);
+      if (this.shot.fx === w.x) this.shot = prevShot;
       if (m.mood === 'happy') m.mood = was === 'surprised' ? 'normal' : was;
       m.booping = false;
     }
