@@ -291,9 +291,10 @@
         lowpass: 420,          // Hz, speech low-pass before it is added to the packet
         speechGain: 1.0,       // G: speech amplitude relative to the packet amplitude
         speechWindow: 40,      // ms of low-passed speech stretched across the packet
-        wobble: 1.8,           // hand-drawn line: jitter (design px)
-        boilFps: 10,           // how often the hand-drawn wobble is redrawn
-        inkWeight: 2.6,        // line weight (design px)
+        fps: 12,               // drawings per second; motion is simulated smoothly but shown held, like cel animation
+        wobble: 3.2,           // hand-drawn line: jitter (design px)
+        boilFps: null,         // how often the wobble is redrawn; defaults to fps (a new drawing every frame)
+        inkWeight: 3.4,        // marker weight (design px)
         capture: null,         // { fps } renders on demand for video; see tools/render_videos.js
         background: null,      // fill colour; null keeps the canvas transparent
         seed: 7,
@@ -708,10 +709,13 @@
           this.hopOnce(m, 1.3, true).then(() => this.clock.wait(0.6)).then(() => { if (m.mood === 'happy') m.mood = was === 'happy' ? 'normal' : was; });
         });
       };
+      let shown = -1;
       p.draw = () => {
         const dt = this.o.capture ? 1 / (this.o.capture.fps || 30) : Math.min(0.05, p.deltaTime / 1000 || 1 / 60);
         this.update(dt);
-        this.render(p);
+        // hold each drawing: only redraw when the frame number at the drawing rate changes
+        const frame = Math.floor(this.t * (this.o.fps || 60));
+        if (frame !== shown || this.o.capture) { shown = frame; this.render(p); }
       };
     }
 
@@ -911,47 +915,59 @@
       // detector rings & tracks from collisions: drawn beneath the line
       for (const e of this.events) this.drawEvent(p, e);
 
-      // the line itself, hand-drawn: the wobble is re-drawn a few times a second ("boil"),
-      // pen pressure varies along the stroke, and a faint pencil line runs underneath
+      // the line itself, drawn like a marker by hand: every drawing is new, the line is laid down
+      // in separate strokes that lift, overlap and don't quite meet, and pressure varies along each one
       const ctx = p.drawingContext, L = B.S[N - 1];
-      const tb = Math.floor(this.t * this.o.boilFps), wob = this.o.wobble;
+      const tb = Math.floor(this.t * (this.o.boilFps || this.o.fps || 12)), wob = this.o.wobble;
       const half = this.reveal / 2, sLo = (0.5 - half) * L, sHi = (0.5 + half) * L;
       const seamless = this.closed && this.reveal >= 1 && !this.morphState;
       const rgb = h => { const q = p.color(h); return [p.red(q), p.green(q), p.blue(q)]; };
       const ink = rgb(c.ink), cols = [rgb(c.mu), rgb(c.anti)];
-      const X = B.X || (B.X = new Float32Array(N)), Y = B.Y || (B.Y = new Float32Array(N));
-      const X2 = B.X2 || (B.X2 = new Float32Array(N)), Y2 = B.Y2 || (B.Y2 = new Float32Array(N));
-      for (let i = 0; i < N; i++) {
-        const sv = B.S[i], d = B.D[i];
-        const j = (p.noise(sv * 0.011, tb * 3.1) - 0.5) * 5 * wob;
-        const j2 = (p.noise(sv * 0.017 + 300, tb * 2.3) - 0.5) * 7 * wob;
-        X[i] = B.bx[i] + B.nx[i] * (d + j); Y[i] = B.by[i] + B.ny[i] * (d + j);
-        X2[i] = B.bx[i] + B.nx[i] * (d + j2) + 0.6; Y2[i] = B.by[i] + B.ny[i] * (d + j2) + 0.8;
-      }
+      const hash = n => { const x = Math.sin(n * 127.1 + tb * 311.7) * 43758.5453; return x - Math.floor(x); };
+      const STEP = 3;   // coarse sampling keeps the stroke a little angular
+      // stroke boundaries along the line, re-chosen for every drawing
+      const cuts = [sLo];
+      for (let k = 0, at = sLo; at < sHi; k++) { at += 110 + 150 * hash(k); cuts.push(Math.min(at, sHi)); }
       ctx.save();
       ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-      // pencil underdraw, a little shorter than the inked line at each end
-      const pad = 18 + 14 * p.noise(tb * 0.7);
-      ctx.strokeStyle = `rgba(${ink[0]},${ink[1]},${ink[2]},0.28)`; ctx.lineWidth = 0.9;
-      ctx.beginPath();
-      let started = false;
-      for (let i = 0; i < N; i++) {
-        if (B.S[i] < sLo + pad || B.S[i] > sHi - pad) { started = false; continue; }
-        if (!started) { ctx.moveTo(X2[i], Y2[i]); started = true; } else ctx.lineTo(X2[i], Y2[i]);
+      const pt = (i, seed, amp) => {
+        const sv = B.S[i], d = B.D[i] + (p.noise(sv * 0.013 + seed, tb * 3.7) - 0.5) * 5 * amp;
+        return [B.bx[i] + B.nx[i] * d, B.by[i] + B.ny[i] * d];
+      };
+      const colorAt = (i, a) => {
+        const w = B.W[i], ci = B.C[i], k = w > 0.02 && ci >= 0 ? Math.min(1, w * 1.6) : 0, cc = k ? cols[ci] : ink;
+        return `rgba(${lerp(ink[0], cc[0], k) | 0},${lerp(ink[1], cc[1], k) | 0},${lerp(ink[2], cc[2], k) | 0},${a})`;
+      };
+      for (let k = 0; k < cuts.length - 1; k++) {
+        // each stroke overshoots its neighbours a little and sits slightly off the true line
+        const over = seamless || (k > 0 && k < cuts.length - 2) ? 4 + 8 * hash(k + 50) : 0;
+        const s0 = Math.max(sLo, cuts[k] - over), s1 = Math.min(sHi, cuts[k + 1] + over * 0.5);
+        const seed = k * 7.3 + 11, shove = (hash(k + 90) - 0.5) * 1.6;
+        let prev = null;
+        for (let i = 0; i < N; i += STEP) {
+          const sv = B.S[i];
+          if (sv < s0 || sv > s1) continue;
+          const q = pt(i, seed, wob); q[0] += B.nx[i] * shove; q[1] += B.ny[i] * shove;
+          if (prev) {
+            const f = (sv - s0) / Math.max(1, s1 - s0);
+            const ends = seamless ? 1 : Math.pow(clamp(Math.min(sv - sLo, sHi - sv) / 30, 0.15, 1), 0.6);
+            const press = (0.55 + 0.5 * Math.sin(Math.PI * f)) * (0.8 + 0.5 * p.noise(sv * 0.01 + 40, tb * 0.9));
+            ctx.strokeStyle = colorAt(i, 1);
+            ctx.lineWidth = this.o.inkWeight * press * ends * (1 + 0.45 * B.W[i]);
+            ctx.beginPath(); ctx.moveTo(prev[0], prev[1]); ctx.lineTo(q[0], q[1]); ctx.stroke();
+          }
+          prev = q;
+        }
       }
-      ctx.stroke();
-      // ink
-      for (let i = 0; i < N - 1; i++) {
+      // a quick second pass, lighter and looser, as if the line was gone over again
+      ctx.lineWidth = 1.1;
+      let prev2 = null;
+      for (let i = 0; i < N; i += STEP) {
         const sv = B.S[i];
-        if (sv < sLo || B.S[i + 1] > sHi + 1e-3) continue;
-        const dEnd = seamless ? 1e9 : Math.min(sv - sLo, sHi - sv);
-        const taper = Math.pow(clamp(dEnd / 45, 0.12, 1), 0.6);
-        const pressure = 0.72 + 0.6 * p.noise(sv * 0.004 + 40, tb * 0.7);
-        const w = B.W[i], ci = B.C[i];
-        const k = w > 0.02 && ci >= 0 ? Math.min(1, w * 1.6) : 0, cc = k ? cols[ci] : ink;
-        ctx.strokeStyle = `rgb(${lerp(ink[0], cc[0], k) | 0},${lerp(ink[1], cc[1], k) | 0},${lerp(ink[2], cc[2], k) | 0})`;
-        ctx.lineWidth = this.o.inkWeight * pressure * taper * (1 + 0.45 * w);
-        ctx.beginPath(); ctx.moveTo(X[i], Y[i]); ctx.lineTo(X[i + 1], Y[i + 1]); ctx.stroke();
+        if (sv < sLo + 25 || sv > sHi - 25 || hash(Math.floor(sv / 90) + 200) < 0.3) { prev2 = null; continue; }
+        const q = pt(i, 500, wob * 1.6);
+        if (prev2) { ctx.strokeStyle = colorAt(i, 0.45); ctx.beginPath(); ctx.moveTo(prev2[0], prev2[1]); ctx.lineTo(q[0], q[1]); ctx.stroke(); }
+        prev2 = q;
       }
       ctx.restore();
 
@@ -998,7 +1014,7 @@
       const st = Math.abs(m.lean);
       p.scale(m.eye * m.sx * (1 + st * 0.14), m.eye * m.sy * (1 - st * 0.08));
       const ctx = p.drawingContext;
-      const tb = Math.floor(t * this.o.boilFps);
+      const tb = Math.floor(t * (this.o.boilFps || this.o.fps || 12));
       const paper = c.paper, ink = c.ink;
       const lidCol = p.lerpColor(p.color(paper), p.color(c[m.color]), 0.55).toString();
       const R = 13.5, gap = 17 + Math.abs(m.lean) * 3;
@@ -1009,15 +1025,23 @@
         const rx = R * 0.88 * sz, ry = R * 1.12 * sz;
         ctx.save();
         ctx.translate(side * gap, side > 0 ? 1 : 0);
-        // wobbly outline, boiling with the line
-        const eyePath = new Path2D();
-        for (let q = 0; q <= 30; q++) {
-          const th = (q / 30) * TAU, w = 1 + (p.noise(q % 30 * 0.4 + side * 17, tb * 1.9) - 0.5) * 0.11;
-          const x = Math.cos(th) * rx * w, y = Math.sin(th) * ry * w;
-          q ? eyePath.lineTo(x, y) : eyePath.moveTo(x, y);
-        }
-        eyePath.closePath();
-        ctx.fillStyle = paper; ctx.fill(eyePath);
+        // lumpy outline, redrawn every drawing
+        const lumpy = (seed, amp, n = 9, open = 0) => {
+          const pts = [];
+          for (let q = 0; q < n; q++) {
+            const th = (q / n) * TAU + seed, w = 1 + (p.noise(q * 0.9 + side * 17 + seed * 3, tb * 2.3) - 0.5) * amp;
+            pts.push([Math.cos(th) * rx * w, Math.sin(th) * ry * w]);
+          }
+          const path = new Path2D(), mid = (u, v) => [(u[0] + v[0]) / 2, (u[1] + v[1]) / 2];
+          let m0 = mid(pts[n - 1], pts[0]);
+          path.moveTo(m0[0], m0[1]);
+          for (let q = 0; q < n; q++) { const m1 = mid(pts[q], pts[(q + 1) % n]); path.quadraticCurveTo(pts[q][0], pts[q][1], m1[0], m1[1]); }
+          if (open) { const e = pts[0]; path.lineTo(e[0] + open, e[1] - open * 0.6); } else path.closePath();
+          return path;
+        };
+        const eyePath = lumpy(0, 0.32);
+        const reg = (p.noise(side * 9, tb * 5.1) - 0.5) * 3;   // fills print slightly off-register
+        ctx.save(); ctx.translate(reg, -reg * 0.6); ctx.fillStyle = paper; ctx.fill(eyePath); ctx.restore();
         ctx.save();
         ctx.clip(eyePath);
         // pupil
@@ -1032,7 +1056,12 @@
           const pr = rx * 0.56 * ex.pupil;
           // a slight inward pull when looking close makes the gaze feel focused
           const px = m.look.x * (rx - pr * 0.75) - side * 0.6, py = m.look.y * (ry - pr * 0.8);
-          ctx.fillStyle = ink; ctx.beginPath(); ctx.ellipse(px, py, pr, pr * 1.06, 0, 0, TAU); ctx.fill();
+          ctx.fillStyle = ink; ctx.beginPath();
+          for (let q = 0; q <= 7; q++) {
+            const th = (q / 7) * TAU, w = pr * (1 + (p.noise(q * 1.3 + side * 4, tb * 2.7) - 0.5) * 0.35);
+            q ? ctx.lineTo(px + Math.cos(th) * w, py + Math.sin(th) * w) : ctx.moveTo(px + w, py);
+          }
+          ctx.fill();
           ctx.fillStyle = paper;
           ctx.beginPath(); ctx.arc(px + pr * 0.34, py - pr * 0.4, pr * 0.32, 0, TAU); ctx.fill();
           ctx.beginPath(); ctx.arc(px - pr * 0.32, py + pr * 0.36, pr * 0.13, 0, TAU); ctx.fill();
@@ -1062,7 +1091,8 @@
           ctx.fill(); ctx.stroke();
         }
         ctx.restore();
-        ctx.strokeStyle = ink; ctx.lineWidth = 2.1; ctx.stroke(eyePath);
+        ctx.strokeStyle = ink; ctx.lineWidth = 2.4; ctx.stroke(eyePath);
+        ctx.lineWidth = 1; ctx.stroke(lumpy(0.7, 0.42, 8, 2.5));   // traced twice, not quite on top
         // brow: a tapered stroke that lifts with loud syllables
         const by = -ry - 7 - ex.browY - (side > 0 ? ex.asym : 0);
         ctx.save();
