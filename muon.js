@@ -116,6 +116,12 @@
     },
   };
   for (const k in SHAPES) SHAPES[k].xy = resample(SHAPES[k].pts);
+  // where the μ glyph sits along the line; riders keep off it so their packet stays legible
+  SHAPES.mu.avoid = (() => {
+    const xy = SHAPES.mu.xy; let a = 1, b = 0;
+    for (let i = 0; i < N; i++) if (Math.abs(xy[2 * i + 1] - BASE_Y) > 3) { a = Math.min(a, i / (N - 1)); b = Math.max(b, i / (N - 1)); }
+    return [a - 0.06, b + 0.06];
+  })();
 
   // ------------------------------------------------------------------ tweens & cancellable acts
   const CANCEL = { cancelled: true };
@@ -271,6 +277,7 @@
         anti: v('--mu-plus', dark ? '#6fb2ff' : '#2a64a0'),
         font: v('--mu-font', '"EB Garamond", Georgia, serif'),
       }, this.o.colors || {});
+      c.family = c.font.split(',')[0].replace(/["']/g, '').trim();
       this.c = c;
     }
 
@@ -301,8 +308,19 @@
       this.closed = !!SHAPES[name].closed;
       if (wasClosed && !this.closed) this.mu.forEach(m => { m.u = mod(m.u, 1); if (m.target != null) m.target = clamp(mod(m.target, 1), 0.05, 0.95); });
       // the line jiggles the riders when it moves
-      this.mu.forEach(m => { if (m.alive) { m.svy += 4; } });
+      this.mu.forEach(m => {
+        if (!m.alive) return;
+        m.svy += 4;
+        const av = SHAPES[name].avoid;
+        if (av && m.u > av[0] && m.u < av[1]) { m.target = this.offGlyph(m.u); m.maxSpeed = 0.5; }
+      });
       return this.until(() => !this.morphState);
+    }
+
+    offGlyph(u) {
+      const av = SHAPES[this.shape].avoid;
+      if (!av || u < av[0] || u > av[1]) return u;
+      return u - av[0] < av[1] - u ? av[0] : av[1];
     }
 
     pos(m) { return this.closed ? mod(m.u, 1) : clamp(m.u, 0.02, 0.98); }
@@ -409,7 +427,8 @@
           if (r < 0.2) { await g(this.hopOnce(m, rand(0.7, 1.2))); }
           else if (r < 0.32) { m.mood = 'happy'; await g(this.wait(rand(0.6, 1.2))); m.mood = 'normal'; }
           else {
-            const tgt = this.closed ? m.u + rand(-0.6, 0.6) : rand(0.08, 0.92);
+            let tgt = this.closed ? m.u + rand(-0.6, 0.6) : rand(0.08, 0.92);
+            tgt = this.offGlyph(tgt);
             await g(this.moveTo(m, tgt, rand(0.12, 0.3)));
             if (Math.random() < 0.3) await g(this.hopOnce(m, rand(0.5, 1)));
           }
@@ -458,12 +477,13 @@
         if (two) { this.mu[1].target = null; }
         await g(this.moveTo(m, 0.12, 0.35));
         this.speak(m, 'wheee');
-        const legs = [['hills', 0.88], ['wave', 0.15], ['loop', 0.9], ['ring', 1.6], ['mu', 0.5], ['flat', 0.5]];
+        const legs = [['hills', 0.88], ['wave', 0.15], ['loop', 0.9], ['ring', 1.6], ['mu', 0.9], ['flat', 0.5]];
         for (const [shape, to] of legs) {
           this.morph(shape);
           if (shape === 'ring') this.speak(m, 'ring');
           if (shape === 'mu') { m.u = mod(m.u, 1); this.speak(m, 'mu'); }
           await g(this.moveTo(m, to, 0.32));
+          if (shape === 'mu') { m.lookAt = { x: -1, y: -0.3 }; m.mood = 'happy'; await g(this.wait(1.2)); m.mood = 'normal'; m.lookAt = null; }
           await g(this.hopOnce(m, 0.7));
           await g(this.wait(0.5));
         }
@@ -475,6 +495,7 @@
       this.voice.unlock();
       return this.act(async g => {
         await this._ensureAlive(g);
+        if (SHAPES[this.shape].avoid) await g(this.morph('flat'));
         let [a, b] = this.mu;
         a.u = mod(a.u, 1);
         if (!b.alive) {
@@ -833,7 +854,7 @@
       if (this.o.labels && m.label > 0.01) {
         const col = p.color(c[m.color]); col.setAlpha(255 * m.label * 0.85);
         p.noStroke(); p.fill(col);
-        p.textFont(c.font); p.textStyle(p.ITALIC); p.textSize(17); p.textAlign(p.CENTER, p.CENTER);
+        p.textFont(c.family); p.textStyle(p.ITALIC); p.textSize(17); p.textAlign(p.CENTER, p.CENTER);
         const off = m.amp + 26;
         p.text(m.name, a.bx - a.nx * off, a.by - a.ny * off);
       }
@@ -841,7 +862,7 @@
       if (m.captionA > 0.01 && m.caption) {
         const col = p.color(c.ink); col.setAlpha(255 * m.captionA);
         p.noStroke(); p.fill(col);
-        p.textFont(c.font); p.textStyle(p.ITALIC); p.textSize(19);
+        p.textFont(c.family); p.textStyle(p.ITALIC); p.textSize(19);
         const cx = clamp(a.x, 170, DW - 170);
         const above = a.y > 90;
         p.textAlign(p.CENTER, above ? p.BOTTOM : p.TOP);
