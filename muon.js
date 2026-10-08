@@ -19,7 +19,8 @@
   const N = 520;                  // samples along the line
   const DW = 1000, DH = 420;      // design space; everything scales from here
   const BASE_Y = 265;
-  const AMP = 42, SIG = 38;      // the packet at rest: height and width (design px)
+  const AMP = 42, SIG = 38;
+  const DIST = 900, SCX = DW / 2, SCY = DH / 2;   // camera distance and the frame centre      // the packet at rest: height and width (design px)
 
   const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
   const lerp = (a, b, t) => a + (b - a) * t;
@@ -123,7 +124,20 @@
       }),
     },
   };
-  for (const k in SHAPES) SHAPES[k].xy = resample(SHAPES[k].pts);
+  // two shapes leave the page: depth is z, negative toward the viewer
+  SHAPES.dive = {
+    pts: sampleFn(u => [lerp(X0, X1, u), BASE_Y + 30 * Math.exp(-Math.pow((u - 0.5) / 0.16, 2))]),
+    zf: u => -560 * Math.exp(-Math.pow((u - 0.5) / 0.14, 2)),
+  };
+  SHAPES.helix = {
+    pts: sampleFn(u => [lerp(X0, X1, u), BASE_Y - 75 * (1 - Math.cos(TAU * 3 * u))]),
+    zf: u => -170 * Math.sin(TAU * 3 * u),
+  };
+  for (const k in SHAPES) {
+    SHAPES[k].xy = resample(SHAPES[k].pts);
+    SHAPES[k].z = new Float32Array(N);
+    if (SHAPES[k].zf) for (let i = 0; i < N; i++) SHAPES[k].z[i] = SHAPES[k].zf(i / (N - 1));
+  }
   // where the μ glyph sits along the line; riders keep off it so their packet stays legible
   SHAPES.mu.avoid = (() => {
     const xy = SHAPES.mu.xy; let a = 1, b = 0;
@@ -265,6 +279,7 @@
     constructor(name, sign, color) {
       this.name = name; this.sign = sign; this.color = color;
       this.u = 0.5; this.vel = 0; this.target = null; this.maxSpeed = 0.22; this.accel = 6;
+      this.zPush = 0; this.booping = false;
       this.dir = 1; this.lean = 0; this.leanV = 0; this.spin = 0; this.flip = null; this.crouch = false; this.bob = 0;
       this.amp = 0; this.sigma = 34; this.k = 0.19; this.omega = 9; this.phase = rand(0, TAU);
       this.eye = 0; this.eyeLift = 0; this.blink = 0; this.nextBlink = rand(1, 3);
@@ -314,6 +329,12 @@
       this.mu = [new Muon('μ⁻', -1, 'mu'), new Muon('μ⁺', +1, 'anti')];
       this.mu[1].u = 0.8;
       this.cur = Float32Array.from(SHAPES.flat.xy);
+      this.curZ = new Float32Array(N);
+      // the camera springs toward whatever the director (or an act's 'shot') asks for
+      this.cam = { fx: 500, fy: BASE_Y, fz: 0, zoom: 1, yaw: 0, pitch: 0.1, roll: 0 };
+      this.camV = { fx: 0, fy: 0, fz: 0, zoom: 0, yaw: 0, pitch: 0, roll: 0 };
+      this.shot = {};
+      this.timeScale = 1;
       this.shape = 'flat';
       this.closed = false;
       this.morphState = null;
@@ -322,7 +343,8 @@
       this.mouse = null;
       this.shake = 0;
       this._buf = { bx: new Float32Array(N), by: new Float32Array(N), nx: new Float32Array(N), ny: new Float32Array(N),
-        S: new Float32Array(N), D: new Float32Array(N), W: new Float32Array(N), C: new Int8Array(N) };
+        S: new Float32Array(N), D: new Float32Array(N), W: new Float32Array(N), C: new Int8Array(N),
+        bz: new Float32Array(N), Dz: new Float32Array(N) };
       this.readColors();
       const mq = global.matchMedia && global.matchMedia('(prefers-color-scheme: dark)');
       if (mq && mq.addEventListener) mq.addEventListener('change', () => this.readColors());
@@ -353,8 +375,11 @@
     act(fn) {
       const ep = ++this.epoch;
       this.clock.clear();
+      this.shot = {}; this.timeScale = 1;
       this.mu.forEach(m => {
         if (!m.alive) return;
+        if (m.zPush) this.clock.to(m, { zPush: 0 }, 0.5, Ease.outBack);
+        m.booping = false;
         m.target = null; m.maxSpeed = 0.22; m.accel = 6; m.lookAt = null;
         if (m.mood !== 'dizzy') m.mood = 'normal';
         this.clock.to(m, { amp: AMP, sigma: SIG, eye: 1, blink: 0 }, 0.4, Ease.out);
@@ -370,7 +395,8 @@
     // ---------------- geometry
     morph(name, dur = 1.3) {
       if (!SHAPES[name] || name === this.shape) return Promise.resolve();
-      this.morphState = { from: Float32Array.from(this.cur), to: SHAPES[name].xy, t: 0, dur };
+      this.morphState = { from: Float32Array.from(this.cur), to: SHAPES[name].xy, fromZ: Float32Array.from(this.curZ), toZ: SHAPES[name].z, t: 0, dur };
+      this.camV.roll += 0.35 * (rnd() < 0.5 ? -1 : 1);   // the world lurches
       const wasClosed = this.closed;
       this.shape = name;
       this.closed = !!SHAPES[name].closed;
@@ -445,6 +471,22 @@
       await this.until(() => !m.airborne);
     }
 
+    // leap out of the page at the viewer, splat on the glass, spring back
+    async boop(m) {
+      if (!m.alive || m.booping) return;
+      m.booping = true;
+      const was = m.mood;
+      m.mood = 'surprised'; m.sx = 1.3; m.sy = 0.7;
+      await this.tween(m, { zPush: -80, amp: AMP * 0.6 }, 0.22, Ease.out);      // wind up into the page
+      m.mood = 'happy';
+      await this.tween(m, { zPush: 660, amp: AMP * 1.3 }, 0.3, Ease.in);       // and out at you
+      this.shake = 1; m.sx = 1.5; m.sy = 0.6; this.camV.zoom -= 2.5; this.camV.roll += 0.8;
+      await this.wait(0.6);
+      await this.tween(m, { zPush: 0, amp: AMP }, 1.0, Ease.outElastic);
+      if (m.mood === 'happy') m.mood = was === 'surprised' ? 'normal' : was;
+      m.booping = false;
+    }
+
     async shimmy(m, n = 4) {
       for (let i = 0; i < n; i++) { m.leanV += (i % 2 ? 1 : -1) * 11; m.svx += 3; await this.wait(0.13); }
     }
@@ -467,17 +509,17 @@
 
     ripple(u, amp = 10, life = 1.6, k = 0.08) { this.ripples.push({ u, amp, life, age: 0, k, c: 380 }); }
 
-    burst(x, y) {
+    burst(x, y, z = 0) {
+      // tracks curl in the field and many fly out of the page at the viewer
       const tracks = [];
-      const n = 14;
-      for (let i = 0; i < n; i++) {
+      for (let i = 0; i < 18; i++) {
         const charged = rnd() < 0.8;
         tracks.push({
-          a: rand(0, TAU), k: charged ? rand(-0.012, 0.012) : 0, kk: charged ? rand(-0.00004, 0.00004) : 0,
-          L: rand(80, 260), col: charged ? (rnd() < 0.5 ? 'mu' : 'anti') : 'ink', dashed: !charged,
+          a: rand(0, TAU), k: charged ? rand(-0.014, 0.014) : 0, kk: charged ? rand(-0.00004, 0.00004) : 0,
+          vz: rand(-2.4, 0.6), L: rand(120, 340), col: charged ? (rnd() < 0.5 ? 'mu' : 'anti') : 'ink', dashed: !charged,
         });
       }
-      this.events.push({ x, y, age: 0, life: 2.6, tracks });
+      this.events.push({ x, y, z, age: 0, life: 2.8, tracks });
       this.shake = 1;
     }
 
@@ -491,8 +533,12 @@
           live.forEach(m => (m.alive = false));
           await g(this.morph('flat', 0.9));
         }
+        // start tight on the middle of the line, then pull out once he's awake
+        this.shot = { fx: 500, fy: BASE_Y - 10, fz: 0, zoom: 3.4, yaw: 0.35, pitch: 0.3, K: 14, D: 6 };
         if (this.reveal < 1) await g(this.tween(this, { reveal: 1 }, 1.0, Ease.inOut));
+        this.shot.yaw = -0.15; this.shot.zoom = 3.8;
         await this._birth(this.mu[0], g, 0.5);
+        this.shot = {};
         this.speak(this.mu[0], 'hello');
         await g(this.wait(2.2));
         return this._wander(g);
@@ -519,7 +565,8 @@
             m.lookAt = null; m.mood = 'normal';
           }
           else if (r < 0.39) { m.mood = 'happy'; for (let i = 0; i < 3; i++) await g(this.hopOnce(m, 0.45)); m.mood = 'normal'; }
-          else if (r < 0.43) { m.mood = 'sleepy'; await g(this.wait(rand(1, 1.8))); m.mood = 'surprised'; await g(this.shimmy(m, 4)); m.mood = 'normal'; }
+          else if (r < 0.48) { await g(this.boop(m)); }
+          else if (r < 0.52) { m.mood = 'sleepy'; await g(this.wait(rand(1, 1.8))); m.mood = 'surprised'; await g(this.shimmy(m, 4)); m.mood = 'normal'; }
           else {
             let tgt = this.closed ? m.u + rand(-0.6, 0.6) : rand(0.08, 0.92);
             tgt = this.offGlyph(tgt);
@@ -571,17 +618,26 @@
         if (two) { this.mu[1].target = null; }
         await g(this.moveTo(m, 0.12, 0.35));
         this.speak(m, 'wheee');
-        const legs = [['hills', 0.88], ['wave', 0.15], ['loop', 0.9], ['ring', 1.6], ['mu', 0.9], ['flat', 0.5]];
+        const legs = [['hills', 0.88], ['dive', 0.12], ['helix', 0.88], ['loop', 0.12], ['ring', 1.6], ['mu', 0.9], ['flat', 0.5]];
+        const shots = {
+          dive: { yaw: 0.55, pitch: 0.22, zoom: 1.05 },
+          helix: { yaw: -0.75, pitch: 0.3, zoom: 1.1 },
+          loop: { pitch: -0.15, zoom: 1.35 },
+          ring: { yaw: 0, pitch: 0.2, zoom: 1.2 },
+        };
         for (const [shape, to] of legs) {
           this.morph(shape);
+          this.shot = Object.assign({ wide: true }, shots[shape] || {});
+          if (shape === 'ring') this.tween(this.shot, { yaw: TAU }, 3.4, Ease.inOut).then(() => { if (this.shot.yaw > TAU - 0.01) { this.cam.yaw -= TAU; this.shot.yaw = 0; } });
           if (shape === 'ring') { this.speak(m, 'ring'); m.mood = 'happy'; }
           if (shape === 'loop') { m.mood = 'surprised'; this.clock.wait(1.2).then(() => (m.mood = 'normal')); }
           if (shape === 'mu') { m.u = mod(m.u, 1); this.speak(m, 'mu'); }
           await g(this.moveTo(m, to, 0.32));
           if (shape === 'mu') { m.lookAt = { x: -1, y: -0.3 }; m.mood = 'happy'; await g(this.wait(1.2)); m.mood = 'normal'; m.lookAt = null; }
-          await g(this.hopOnce(m, 0.7));
+          await g(shape === 'dive' || shape === 'flat' ? this.boop(m) : this.hopOnce(m, 0.7));
           await g(this.wait(0.5));
         }
+        this.shot = {};
         return this._wander(g);
       });
     }
@@ -600,13 +656,16 @@
         b.u = mod(b.u, 1);
         if (a.u > b.u) [a, b] = [b, a];   // whoever is on the left starts on the left
         const self = this.mu[0], anti = this.mu[1];
+        this.shot = { wide: true, yaw: 0.8, pitch: 0.2, zoom: 1.0 };          // down the beamline
         await g(Promise.all([this.moveTo(a, 0.16, 0.4), this.moveTo(b, 0.84, 0.4)]));
+        this.shot = {};
         a.lookAt = { x: 1, y: 0 }; b.lookAt = { x: -1, y: 0 };
         a.mood = b.mood = 'determined';
         await g(this.speak(anti, 'anti_ready'));
         this.speak(self, 'ready');
         await g(this.wait(0.7));
         // wind up
+        this.shot = { wide: true, yaw: 0.95, pitch: 0.16, zoom: 1.05 };
         await g(Promise.all([this.tween(a, { u: 0.11, amp: 22, sigma: 26 }, 0.5, Ease.out), this.tween(b, { u: 0.89, amp: 22, sigma: 26 }, 0.5, Ease.out)]));
         await g(this.wait(0.6));
         this.tween(a, { amp: AMP * 1.15 }, 0.3); this.tween(b, { amp: AMP * 1.15 }, 0.3);
@@ -619,7 +678,13 @@
         // contact!
         const uc = (this.pos(a) + this.pos(b)) / 2, i = Math.round(uc * (N - 1));
         const B = this._buf;
-        this.burst(B.bx[i] + B.nx[i] * 20, B.by[i] + B.ny[i] * 20);
+        const vx = B.bx[i] + B.nx[i] * 20, vy = B.by[i] + B.ny[i] * 20, vz = B.bz[i];
+        this.burst(vx, vy, vz);
+        // slam in on the vertex in slow motion, then let time snap back
+        this.shot = { wide: true, fx: vx, fy: vy, fz: vz, zoom: 2.3, yaw: 0.35, pitch: 0.25, roll: 0.22, K: 70, D: 11 };
+        this.timeScale = 0.15;
+        this.clock.wait(0.16).then(() => this.tween(this, { timeScale: 1 }, 0.35, Ease.in))
+          .then(() => { this.shot = { wide: true, fx: vx, fy: vy, fz: vz, zoom: 1.25, yaw: 0.2, pitch: 0.15, K: 20 }; });
         this.ripple(uc, 16, 2.2, 0.05);
         a.mood = b.mood = 'surprised';
         this.clock.wait(0.25).then(() => { if (a.mood === 'surprised') { a.mood = b.mood = 'dizzy'; a.dizzy = b.dizzy = 1; } });
@@ -628,7 +693,8 @@
         a.target = uc - 0.24; b.target = uc + 0.24; a.maxSpeed = b.maxSpeed = 0.5;
         a.jumpV = 280; b.jumpV = 280; a.airborne = b.airborne = true;
         this.tween(a, { amp: AMP, sigma: SIG }, 0.9, Ease.outElastic); this.tween(b, { amp: AMP, sigma: SIG }, 0.9, Ease.outElastic);
-        await g(this.wait(1.6));
+        await g(this.wait(1.9));
+        this.shot = {};
         self.mood = 'sad'; anti.mood = 'normal';
         await g(this.speak(self, 'ouch'));
         anti.mood = 'smug'; self.mood = 'normal';
@@ -703,7 +769,8 @@
         this.mu.forEach(m => {
           if (!m.alive) return;
           const a = this.anchor(m);
-          if (Math.hypot(p.mouseX / s - a.x, p.mouseY / s - a.y) > 55) return;
+          if (Math.hypot(p.mouseX / s - a.x, p.mouseY / s - a.y) > 55 * a.k) return;
+          if (rnd() < 0.5) { this.boop(m); return; }
           const was = m.mood;
           m.mood = 'happy';
           this.hopOnce(m, 1.3, true).then(() => this.clock.wait(0.6)).then(() => { if (m.mood === 'happy') m.mood = was === 'happy' ? 'normal' : was; });
@@ -712,7 +779,7 @@
       let shown = -1;
       p.draw = () => {
         const dt = this.o.capture ? 1 / (this.o.capture.fps || 30) : Math.min(0.05, p.deltaTime / 1000 || 1 / 60);
-        this.update(dt);
+        this.update(dt * this.timeScale);
         // hold each drawing: only redraw when the frame number at the drawing rate changes
         const frame = Math.floor(this.t * (this.o.fps || 60));
         if (frame !== shown || this.o.capture) { shown = frame; this.render(p); }
@@ -730,13 +797,14 @@
         ms.t += dt;
         const e = Ease.jelly(clamp(ms.t / ms.dur, 0, 1));
         for (let i = 0; i < 2 * N; i++) this.cur[i] = lerp(ms.from[i], ms.to[i], e);
-        if (ms.t >= ms.dur) { this.cur.set(ms.to); this.morphState = null; }
+        for (let i = 0; i < N; i++) this.curZ[i] = lerp(ms.fromZ[i], ms.toZ[i], e);
+        if (ms.t >= ms.dur) { this.cur.set(ms.to); this.curZ.set(ms.toZ); this.morphState = null; }
       }
 
       // base geometry, normals, arc length
-      for (let i = 0; i < N; i++) { B.bx[i] = this.cur[2 * i]; B.by[i] = this.cur[2 * i + 1]; }
+      for (let i = 0; i < N; i++) { B.bx[i] = this.cur[2 * i]; B.by[i] = this.cur[2 * i + 1]; B.bz[i] = this.curZ[i]; }
       B.S[0] = 0;
-      for (let i = 1; i < N; i++) B.S[i] = B.S[i - 1] + Math.hypot(B.bx[i] - B.bx[i - 1], B.by[i] - B.by[i - 1]);
+      for (let i = 1; i < N; i++) B.S[i] = B.S[i - 1] + Math.hypot(B.bx[i] - B.bx[i - 1], B.by[i] - B.by[i - 1], B.bz[i] - B.bz[i - 1]);
       const L = B.S[N - 1];
       const loopEnds = Math.hypot(B.bx[0] - B.bx[N - 1], B.by[0] - B.by[N - 1]) < 1;
       for (let i = 0; i < N; i++) {
@@ -745,7 +813,7 @@
         const tx = B.bx[i1] - B.bx[i0], ty = B.by[i1] - B.by[i0], l = Math.hypot(tx, ty) || 1;
         B.nx[i] = ty / l; B.ny[i] = -tx / l;
       }
-      B.D.fill(0); B.W.fill(0); B.C.fill(-1);
+      B.D.fill(0); B.W.fill(0); B.C.fill(-1); B.Dz.fill(0);
 
       // ripples
       for (const r of this.ripples) {
@@ -790,7 +858,7 @@
           m.jumpV -= 1100 * dt; m.jump += m.jumpV * dt;
           if (m.jump <= 0) {
             m.jump = 0; m.jumpV = 0;
-            if (m.airborne) { m.airborne = false; m.sx = 1.25; m.sy = 0.7; this.ripple(this.pos(m), 6, 1.0, 0.09); }
+            if (m.airborne) { m.airborne = false; m.sx = 1.25; m.sy = 0.7; this.ripple(this.pos(m), 6, 1.0, 0.09); this.camV.zoom += 0.9; }
           }
         }
         if (m.flip) {
@@ -884,24 +952,72 @@
             d += G * m.amp * 1.7 * a;
           }
           B.D[i] += gsn * d;
+          B.Dz[i] -= gsn * m.zPush;   // a boop pulls the packet out of the page toward the viewer
           if (gsn > B.W[i]) { B.W[i] = gsn; B.C[i] = mi; }
         }
         // the eyes sit on the packet and bob with it, softened so they don't buzz
         const ic = clamp(Math.round(mod(s0 / L, 1) * (N - 1)), 0, N - 1);
         m.bob = (m.bob || 0) + (B.D[ic] * 0.3 - (m.bob || 0)) * Math.min(1, dt * 9);
       });
+      this.direct(dt);
     }
 
-    anchor(m) {
+    // ---------------- camera
+    direct(dt) {
+      const B = this._buf, t = this.t;
+      let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+      for (let i = 0; i < N; i += 6) { x0 = Math.min(x0, B.bx[i]); x1 = Math.max(x1, B.bx[i]); y0 = Math.min(y0, B.by[i]); y1 = Math.max(y1, B.by[i]); }
+      // the idle camera never sits still: a slow drift in yaw and pitch shows the depth
+      const T = { fx: (x0 + x1) / 2, fy: (y0 + y1) / 2 - 15, fz: 0, zoom: 1, yaw: 0.2 * Math.sin(t * 0.23), pitch: 0.12 + 0.08 * Math.sin(t * 0.17), roll: 0 };
+      const live = this.mu.filter(m => m.alive && m.eye > 0.5);
+      if (live.length === 1) {
+        const m = live[0], w = this.anchorWorld(m, false);
+        T.fx = lerp(T.fx, w.x, 0.4); T.fy = lerp(T.fy, w.y, 0.3); T.fz = w.z * 0.5;
+        T.zoom = 1.15; T.yaw += clamp(m.vel * 1.1, -0.35, 0.35);   // swing with him
+      }
+      const sp = live.find(m => m.speech);
+      if (sp && !this.shot.wide) {
+        // punch in on whoever is talking
+        const w = this.anchorWorld(sp, false);
+        T.fx = w.x; T.fy = w.y + 10; T.fz = w.z; T.zoom = 2.1; T.roll = 0.06 * sp.sign; T.yaw += 0.15 * sp.sign;
+      }
+      for (const k in this.shot) if (k in T) T[k] = this.shot[k];
+      const K = this.shot.K || 30, D = this.shot.D || 8.5;
+      for (const k in T) {
+        this.camV[k] += ((T[k] - this.cam[k]) * K - this.camV[k] * D) * dt;
+        this.cam[k] += this.camV[k] * dt;
+      }
+      const c = this.cam;
+      this._rot = { cy: Math.cos(c.yaw), sy: Math.sin(c.yaw), cp: Math.cos(c.pitch), sp: Math.sin(c.pitch), cr: Math.cos(c.roll), sr: Math.sin(c.roll) };
+    }
+
+    // world (design units, z toward the viewer is negative) to frame: [x, y, scale]
+    proj(x, y, z) {
+      const c = this.cam, r = this._rot || { cy: 1, sy: 0, cp: 1, sp: 0, cr: 1, sr: 0 };
+      const X = x - c.fx, Y = y - c.fy, Z = z - c.fz;
+      const x1 = X * r.cy + Z * r.sy, z1 = -X * r.sy + Z * r.cy;
+      const y2 = Y * r.cp - z1 * r.sp, z2 = Y * r.sp + z1 * r.cp;
+      const x3 = x1 * r.cr - y2 * r.sr, y3 = x1 * r.sr + y2 * r.cr;
+      const k = c.zoom * DIST / Math.max(70, DIST + z2);
+      return [SCX + x3 * k, SCY + y3 * k, k];
+    }
+
+    anchorWorld(m, push = true) {
       const B = this._buf;
       const L = B.S[N - 1] || 1;
       let u = this.pos(m) + (m.lean * m.sigma * 0.8) / L;
       u = this.closed ? mod(u, 1) : clamp(u, 0, 1);
       const f = u * (N - 1), i = Math.min(N - 2, f | 0), fr = f - i;
-      const x = lerp(B.bx[i], B.bx[i + 1], fr), y = lerp(B.by[i], B.by[i + 1], fr);
+      const x = lerp(B.bx[i], B.bx[i + 1], fr), y = lerp(B.by[i], B.by[i + 1], fr), z = lerp(B.bz[i], B.bz[i + 1], fr);
       const nx = lerp(B.nx[i], B.nx[i + 1], fr), ny = lerp(B.ny[i], B.ny[i + 1], fr);
       const lift = m.amp * 0.42 + (m.bob || 0) + m.jump + m.rms * 30;
-      return { x: x + nx * lift, y: y + ny * lift, nx, ny, bx: x, by: y };
+      return { x: x + nx * lift, y: y + ny * lift, z: z - (push ? m.zPush : 0), nx, ny };
+    }
+
+    anchor(m) {
+      const w = this.anchorWorld(m), P = this.proj(w.x, w.y, w.z), Q = this.proj(w.x + w.nx * 10, w.y + w.ny * 10, w.z);
+      const l = Math.hypot(Q[0] - P[0], Q[1] - P[1]) || 1;
+      return { x: P[0], y: P[1], k: P[2], nx: (Q[0] - P[0]) / l, ny: (Q[1] - P[1]) / l, w };
     }
 
     // ------------------------------------------------------------------ drawing
@@ -930,9 +1046,9 @@
       for (let k = 0, at = sLo; at < sHi; k++) { at += 110 + 150 * hash(k); cuts.push(Math.min(at, sHi)); }
       ctx.save();
       ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-      const pt = (i, seed, amp) => {
-        const sv = B.S[i], d = B.D[i] + (p.noise(sv * 0.013 + seed, tb * 3.7) - 0.5) * 5 * amp;
-        return [B.bx[i] + B.nx[i] * d, B.by[i] + B.ny[i] * d];
+      const pt = (i, seed, amp, shove = 0) => {
+        const sv = B.S[i], d = B.D[i] + shove + (p.noise(sv * 0.013 + seed, tb * 3.7) - 0.5) * 5 * amp;
+        return this.proj(B.bx[i] + B.nx[i] * d, B.by[i] + B.ny[i] * d, B.bz[i] + B.Dz[i]);
       };
       const colorAt = (i, a) => {
         const w = B.W[i], ci = B.C[i], k = w > 0.02 && ci >= 0 ? Math.min(1, w * 1.6) : 0, cc = k ? cols[ci] : ink;
@@ -947,13 +1063,13 @@
         for (let i = 0; i < N; i += B.W[i] > 0.05 ? 1 : STEP) {
           const sv = B.S[i];
           if (sv < s0 || sv > s1) continue;
-          const q = pt(i, seed, wob); q[0] += B.nx[i] * shove; q[1] += B.ny[i] * shove;
+          const q = pt(i, seed, wob, shove);
           if (prev) {
             const f = (sv - s0) / Math.max(1, s1 - s0);
             const ends = seamless ? 1 : Math.pow(clamp(Math.min(sv - sLo, sHi - sv) / 30, 0.15, 1), 0.6);
             const press = (0.75 + 0.3 * Math.sin(Math.PI * f)) * (0.88 + 0.25 * p.noise(sv * 0.01 + 40, tb * 0.9));
             ctx.strokeStyle = colorAt(i, 1);
-            ctx.lineWidth = this.o.inkWeight * press * ends * (1 + 0.15 * B.W[i]);
+            ctx.lineWidth = this.o.inkWeight * press * ends * (1 + 0.15 * B.W[i]) * q[2];
             ctx.beginPath(); ctx.moveTo(prev[0], prev[1]); ctx.lineTo(q[0], q[1]); ctx.stroke();
           }
           prev = q;
@@ -966,7 +1082,7 @@
         const sv = B.S[i];
         if (sv < sLo + 25 || sv > sHi - 25 || hash(Math.floor(sv / 90) + 200) < 0.3) { prev2 = null; continue; }
         const q = pt(i, 500, wob * 1.6);
-        if (prev2) { ctx.strokeStyle = colorAt(i, 0.45); ctx.beginPath(); ctx.moveTo(prev2[0], prev2[1]); ctx.lineTo(q[0], q[1]); ctx.stroke(); }
+        if (prev2) { ctx.lineWidth = 1.6 * q[2]; ctx.strokeStyle = colorAt(i, 0.45); ctx.beginPath(); ctx.moveTo(prev2[0], prev2[1]); ctx.lineTo(q[0], q[1]); ctx.stroke(); }
         prev2 = q;
       }
       ctx.restore();
@@ -976,43 +1092,56 @@
     }
 
     drawEvent(p, e) {
-      const c = this.c, t = e.age;
+      const c = this.c, t = e.age, ctx = p.drawingContext;
       const grow = Ease.out(clamp(t / 0.7, 0, 1)), fade = 1 - clamp((t - 1.2) / (e.life - 1.2), 0, 1);
-      p.noFill();
-      // detector layers
-      const ring = p.color(c.ink); ring.setAlpha(45 * fade);
-      p.stroke(ring); p.strokeWeight(0.7);
-      [36, 80, 140].forEach((r, i) => p.circle(e.x, e.y, 2 * r * Ease.outBack(clamp((t - i * 0.06) / 0.5, 0, 1))));
+      const rgba = (h, a) => { const q = p.color(h); return `rgba(${p.red(q)},${p.green(q)},${p.blue(q)},${a})`; };
+      ctx.save(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      // detector layers, as rings in 3D around the vertex
+      [40, 95, 170].forEach((r, i) => {
+        const rr = r * Ease.outBack(clamp((t - i * 0.06) / 0.5, 0, 1));
+        ctx.strokeStyle = rgba(c.ink, 0.35 * fade); ctx.beginPath();
+        for (let q = 0; q <= 32; q++) {
+          const th = (q / 32) * TAU, P = this.proj(e.x + Math.cos(th) * rr, e.y + Math.sin(th) * rr, e.z);
+          ctx.lineWidth = 1.4 * P[2];
+          q ? ctx.lineTo(P[0], P[1]) : ctx.moveTo(P[0], P[1]);
+        }
+        ctx.stroke();
+      });
       // tracks
       for (const tr of e.tracks) {
-        const col = p.color(c[tr.col]); col.setAlpha(230 * fade);
-        p.stroke(col); p.strokeWeight(tr.dashed ? 0.9 : 1.3);
-        let x = e.x, y = e.y, a = tr.a, k = tr.k;
-        const steps = Math.floor((tr.L * grow) / 4);
-        if (tr.dashed) p.drawingContext.setLineDash([4, 5]);
-        p.beginShape();
-        p.vertex(x, y);
-        for (let j = 0; j < steps; j++) { a += k * 4; k += tr.kk * 4 * Math.sign(k || 1) * 40; x += Math.cos(a) * 4; y += Math.sin(a) * 4; p.vertex(x, y); }
-        p.endShape();
-        if (tr.dashed) p.drawingContext.setLineDash([]);
+        let x = e.x, y = e.y, z = e.z, a = tr.a, k = tr.k;
+        const steps = Math.floor((tr.L * grow) / 5);
+        let P = this.proj(x, y, z);
+        ctx.strokeStyle = rgba(c[tr.col], 0.95 * fade);
+        if (tr.dashed) ctx.setLineDash([6, 8]);
+        for (let j = 0; j < steps; j++) {
+          a += k * 5; k += tr.kk * 5 * Math.sign(k || 1) * 40;
+          x += Math.cos(a) * 5; y += Math.sin(a) * 5; z += tr.vz * 5;
+          const Q = this.proj(x, y, z);
+          ctx.lineWidth = (tr.dashed ? 1.6 : 3) * Q[2];
+          ctx.beginPath(); ctx.moveTo(P[0], P[1]); ctx.lineTo(Q[0], Q[1]); ctx.stroke();
+          P = Q;
+        }
+        ctx.setLineDash([]);
       }
       // vertex flash
-      const fl = p.color(c.paper); fl.setAlpha(255 * Math.max(0, 1 - t * 3));
-      p.noStroke(); p.fill(fl); p.circle(e.x, e.y, 60 * (1 - Math.max(0, 1 - t * 3)) + 8);
+      const V = this.proj(e.x, e.y, e.z), fl = Math.max(0, 1 - t * 3);
+      ctx.fillStyle = rgba(c.paper, fl); ctx.beginPath(); ctx.arc(V[0], V[1], (90 * (1 - fl) + 10) * V[2], 0, TAU); ctx.fill();
+      ctx.restore();
     }
 
     drawFace(p, m) {
       const c = this.c, a = this.anchor(m), ex = m.ex;
-      const tilt = clamp(Math.atan2(-a.nx, a.ny) + Math.PI, -Math.PI, Math.PI);
-      const up = Math.abs(tilt) > Math.PI / 2 ? tilt - Math.sign(tilt) * Math.PI : tilt; // keep faces roughly upright
+      let up = Math.atan2(a.nx, -a.ny);                                    // the packet's 'up', on screen
+      if (Math.abs(up) > Math.PI / 2) up -= Math.sign(up) * Math.PI;     // keep faces roughly upright
       const t = this.t;
       const bob = Math.sin(t * 2.4 + m.phase * 0.05) * 1.5;
       const lean = m.lean * 0.4;                               // lean with the packet, slosh included
       p.push();
       p.translate(a.x, a.y + bob);
-      p.rotate(clamp(-up * 0.85, -0.95, 0.95) + lean + (m.spin || 0));
+      p.rotate(clamp(up * 0.85, -0.95, 0.95) + lean + (m.spin || 0));
       const st = Math.abs(m.lean);
-      p.scale(m.eye * m.sx * (1 + st * 0.14), m.eye * m.sy * (1 - st * 0.08));
+      p.scale(a.k * m.eye * m.sx * (1 + st * 0.14), a.k * m.eye * m.sy * (1 - st * 0.08));
       const ctx = p.drawingContext;
       const tb = Math.floor(t * (this.o.boilFps || this.o.fps || 12));
       const paper = c.paper, ink = c.ink;
@@ -1107,10 +1236,10 @@
         const col = p.color(c.ink); col.setAlpha(255 * m.captionA);
         p.noStroke(); p.fill(col);
         p.textFont(c.family); p.textStyle(p.ITALIC); p.textSize(19);
-        const cx = clamp(a.x, 170, DW - 170);
-        const above = a.y > 110;
+        const cx = clamp(a.x, 170, DW - 170), off = 50 * Math.min(a.k, 1.8);
+        const above = a.y - off > 30;
         p.textAlign(p.CENTER, above ? p.BOTTOM : p.TOP);
-        p.text(m.captionQuote === false ? m.caption : '“' + m.caption + '”', cx, above ? a.y - 50 - 6 * m.captionA : a.y + 40);
+        p.text(m.captionQuote === false ? m.caption : '“' + m.caption + '”', cx, above ? a.y - off - 6 * m.captionA : Math.min(DH - 30, a.y + off));
       }
     }
   }
@@ -1126,6 +1255,7 @@
       hop: () => scene.hop(),
       say: id => scene.say(id),
       ride: () => scene.ride(),
+      boop: () => scene.act(async g => { await scene._ensureAlive(g); await g(scene.boop(scene.mu[0])); return scene._wander(g); }),
       faces: () => scene.faces(),
       emote: mood => scene.emote(mood),
       moods: Object.keys(MOODS),
