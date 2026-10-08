@@ -944,7 +944,7 @@
         const s0 = Math.max(sLo, cuts[k] - over), s1 = Math.min(sHi, cuts[k + 1] + over * 0.5);
         const seed = k * 7.3 + 11, shove = (hash(k + 90) - 0.5) * 1.6;
         let prev = null;
-        for (let i = 0; i < N; i += STEP) {
+        for (let i = 0; i < N; i += B.W[i] > 0.05 ? 1 : STEP) {
           const sv = B.S[i];
           if (sv < s0 || sv > s1) continue;
           const q = pt(i, seed, wob); q[0] += B.nx[i] * shove; q[1] += B.ny[i] * shove;
@@ -962,7 +962,7 @@
       // a quick second pass, lighter and looser, as if the line was gone over again
       ctx.lineWidth = 1.1;
       let prev2 = null;
-      for (let i = 0; i < N; i += STEP) {
+      for (let i = 0; i < N; i += B.W[i] > 0.05 ? 1 : STEP) {
         const sv = B.S[i];
         if (sv < sLo + 25 || sv > sHi - 25 || hash(Math.floor(sv / 90) + 200) < 0.3) { prev2 = null; continue; }
         const q = pt(i, 500, wob * 1.6);
