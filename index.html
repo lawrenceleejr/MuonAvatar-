@@ -115,8 +115,8 @@
         start to fizz.</p>
     </div>
     <aside class="side">
-      <p>The dotted outline is the envelope ±A·g(s): the packet’s width σ and height A, drawn faint so the
-        line stays the subject.</p>
+      <p>The packet leans into its motion: the peak runs ahead, the front steepens and the tail trails
+        behind, then it sloshes back when Mu stops.</p>
       <p>Voices were synthesised with Kokoro-82M (<code>am_puck</code> for μ⁻, <code>af_bella</code> for μ⁺)
         by <code>tools/synth_voices.py</code>.</p>
       <p>A muon is 207 times heavier than an electron and lives 2.2 μs at rest.</p>
@@ -127,7 +127,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
 <script src="muon.js"></script>
 <script>
-  const mu = window.__mu = MuonMascot.mount(document.getElementById('stage'), { voiceBase: 'voices/', autoBirth: true });
+  const mu = MuonMascot.mount(document.getElementById('stage'), { voiceBase: 'voices/', autoBirth: true });
 
   document.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', () => mu[b.dataset.act]()));
 

@@ -9,7 +9,7 @@
  *
  *   d(s) = g(s) · [ A cos(k s − ω t)  +  G · a_LP(s) ]
  *
- * where g is the envelope, and a_LP is the low-passed speech waveform around the playhead,
+ * where g is the envelope (skewed toward the direction of travel), and a_LP is the low-passed speech waveform around the playhead,
  * stretched across the packet. Speaking therefore animates itself.
  */
 (function (global) {
@@ -264,7 +264,7 @@
     constructor(name, sign, color) {
       this.name = name; this.sign = sign; this.color = color;
       this.u = 0.5; this.vel = 0; this.target = null; this.maxSpeed = 0.22; this.accel = 6;
-      this.dir = 1;
+      this.dir = 1; this.lean = 0; this.leanV = 0;
       this.amp = 0; this.sigma = 34; this.k = 0.19; this.omega = 9; this.phase = rand(0, TAU);
       this.eye = 0; this.eyeLift = 0; this.blink = 0; this.nextBlink = rand(1, 3);
       this.sx = 1; this.sy = 1; this.svx = 0; this.svy = 0;
@@ -277,7 +277,6 @@
       for (const k in MOODS.normal) { this.ex[k] = MOODS.normal[k]; this.exv[k] = 0; }
       this.wink = 0; this.sacc = { x: 0, y: 0 }; this.nextSacc = 1;
       this.caption = ''; this.captionA = 0;
-      this.label = 0;
     }
     get speaking() { return !!this.speech; }
   }
@@ -291,7 +290,7 @@
         lowpass: 420,          // Hz, speech low-pass before it is added to the packet
         speechGain: 1.0,       // G: speech amplitude relative to the packet amplitude
         speechWindow: 40,      // ms of low-passed speech stretched across the packet
-        wobble: 1.3,           // hand-drawn line: jitter (design px)
+        wobble: 1.8,           // hand-drawn line: jitter (design px)
         boilFps: 10,           // how often the hand-drawn wobble is redrawn
         inkWeight: 2.6,        // line weight (design px)
         capture: null,         // { fps } renders on demand for video; see tools/render_videos.js
@@ -299,9 +298,7 @@
         seed: 7,
         pitch: 1.0,            // playbackRate for voice lines
         carrier: 0.19,         // k, rad per design px
-        showEnvelope: true,
         captions: true,
-        labels: true,
         autoBirth: false,
         colors: null,
       }, opts || {});
@@ -344,6 +341,10 @@
       }, this.o.colors || {});
       c.family = c.font.split(',')[0].replace(/["']/g, '').trim();
       this.c = c;
+      // canvas text never triggers a web font's lazily loaded subsets (Greek, here), so ask for them
+      this.fontsReady = document.fonts && document.fonts.load
+        ? Promise.all(['italic 20px', '20px'].map(f => document.fonts.load(`${f} "${c.family}"`, 'μ⁻⁺“”'))).catch(() => null)
+        : Promise.resolve();
     }
 
     // ---------------- acts: one choreography at a time; a new act cancels the old
@@ -392,7 +393,7 @@
 
     // ---------------- muon behaviours (all return promises)
     async _birth(m, g, at = 0.5, quick = false) {
-      m.u = at; m.amp = 0; m.sigma = 6; m.eye = 0; m.blink = 1; m.alive = true; m.mood = 'normal'; m.label = 0;
+      m.u = at; m.amp = 0; m.sigma = 6; m.eye = 0; m.blink = 1; m.alive = true; m.mood = 'normal';
       m.k = this.o.carrier; m.vel = 0; m.target = null; m.jump = 0;
       if (!quick) {
         // a tremor in the line first
@@ -735,6 +736,10 @@
         m.u += m.vel * dt;
         if (!this.closed && (m.u < 0.02 || m.u > 0.98)) { m.u = clamp(m.u, 0.02, 0.98); m.vel *= -0.4; }
         if (Math.abs(m.vel) > 0.02) m.dir = Math.sign(m.vel);
+        // the packet's weight leans into its motion; an underdamped spring so it sloshes when it stops
+        const leanTo = clamp(m.vel * 3.2, -0.7, 0.7);
+        m.leanV += ((leanTo - m.lean) * 70 - m.leanV * 6) * dt;
+        m.lean = clamp(m.lean + m.leanV * dt, -0.85, 0.85);
         // the packet rolls: phase follows travel, plus its own beat
         m.phase += m.omega * dt + m.vel * L * m.k * dt * 0.6;
 
@@ -804,11 +809,12 @@
         m.talk += ((m.speech ? 1 : 0) - m.talk) * Math.min(1, dt * 8);
         m.captionHold = m.speech ? Math.max(1.1, m.captionHold || 0) : (m.captionHold || 0) - dt;
         m.captionA += ((m.captionHold > 0 ? 1 : 0) - m.captionA) * Math.min(1, dt * 6);
-        m.label += ((m.eye > 0.9 ? 1 : 0) - m.label) * Math.min(1, dt * 2);
 
         // superpose this packet onto the line
-        const s0 = this.pos(m) * L;
-        const reach = 4 * m.sigma;
+        // lopsided envelope: the peak runs ahead, the front steepens, the tail stretches out behind
+        const off = m.lean * m.sigma * 0.6;
+        const s0 = this.pos(m) * L + off;
+        const reach = 4 * m.sigma * (1 + 0.5 * Math.abs(m.lean));
         const w = m.win;
         const G = this.o.speechGain * m.talk;
         const A = m.amp * (1 - 0.35 * m.talk);
@@ -816,7 +822,8 @@
           let ds = B.S[i] - s0;
           if (this.closed) ds = mod(ds + L / 2, L) - L / 2;
           if (ds < -reach || ds > reach) continue;
-          const gsn = Math.exp(-(ds * ds) / (2 * m.sigma * m.sigma));
+          const sg = m.sigma * (1 - 0.5 * m.lean * Math.sign(ds));
+          const gsn = Math.exp(-(ds * ds) / (2 * sg * sg));
           let d = A * Math.cos(this.o.carrier * ds - m.phase);
           if (G > 0.001 && w) {
             // stretch the window across ±reach; the newest sample leads in the direction of travel
@@ -834,7 +841,10 @@
 
     anchor(m) {
       const B = this._buf;
-      const f = this.pos(m) * (N - 1), i = Math.min(N - 2, f | 0), fr = f - i;
+      const L = B.S[N - 1] || 1;
+      let u = this.pos(m) + (m.lean * m.sigma * 0.6) / L;
+      u = this.closed ? mod(u, 1) : clamp(u, 0, 1);
+      const f = u * (N - 1), i = Math.min(N - 2, f | 0), fr = f - i;
       const x = lerp(B.bx[i], B.bx[i + 1], fr), y = lerp(B.by[i], B.by[i + 1], fr);
       const nx = lerp(B.nx[i], B.nx[i + 1], fr), ny = lerp(B.ny[i], B.ny[i + 1], fr);
       const lift = m.amp * 1.05 + 20 + m.jump + m.rms * 40;
@@ -851,30 +861,6 @@
 
       // detector rings & tracks from collisions: drawn beneath the line
       for (const e of this.events) this.drawEvent(p, e);
-
-      // faint envelope ±A·g(s): the packet's anatomy
-      if (this.o.showEnvelope) {
-        this.mu.forEach(m => {
-          if (!m.alive || m.amp < 1) return;
-          const col = p.color(c[m.color]); col.setAlpha(70 * Math.min(1, m.eye));
-          p.stroke(col); p.strokeWeight(0.9); p.noFill();
-          p.drawingContext.setLineDash([1.5, 4.5]);
-          const L = B.S[N - 1], s0 = this.pos(m) * L, tb = Math.floor(this.t * this.o.boilFps);
-          for (const sgn of [1, -1]) {
-            p.beginShape();
-            let open = false;
-            for (let i = 0; i < N; i += 2) {
-              let ds = B.S[i] - s0;
-              if (this.closed) ds = mod(ds + L / 2, L) - L / 2;
-              if (Math.abs(ds) > 3 * m.sigma) { if (open) { p.endShape(); p.beginShape(); open = false; } continue; }
-              const e = sgn * (m.amp + 3) * Math.exp(-(ds * ds) / (2 * m.sigma * m.sigma)) + (p.noise(i * 0.05, tb * 2 + sgn * 9) - 0.5) * 3;
-              p.vertex(B.bx[i] + B.nx[i] * e, B.by[i] + B.ny[i] * e); open = true;
-            }
-            p.endShape();
-          }
-          p.drawingContext.setLineDash([]);
-        });
-      }
 
       // the line itself, hand-drawn: the wobble is re-drawn a few times a second ("boil"),
       // pen pressure varies along the stroke, and a faint pencil line runs underneath
@@ -956,7 +942,7 @@
       const up = Math.abs(tilt) > Math.PI / 2 ? tilt - Math.sign(tilt) * Math.PI : tilt; // keep faces roughly upright
       const t = this.t;
       const bob = Math.sin(t * 2.4 + m.phase * 0.05) * 1.5;
-      const lean = clamp(m.vel * 1.1, -0.28, 0.28);           // lean into the direction of travel
+      const lean = m.lean * 0.4;                               // lean with the packet, slosh included
       p.push();
       p.translate(a.x, a.y + bob);
       p.rotate(clamp(-up * 0.45, -0.5, 0.5) + lean);
@@ -965,10 +951,10 @@
       const tb = Math.floor(t * this.o.boilFps);
       const paper = c.paper, ink = c.ink;
       const lidCol = p.lerpColor(p.color(paper), p.color(c[m.color]), 0.55).toString();
-      const R = 12.5, gap = 16.5 + Math.abs(m.vel) * 6;
+      const R = 12.5, gap = 16.5 + Math.abs(m.lean) * 3;
       for (const side of [-1, 1]) {
         // the leading eye is a touch bigger, and the two are never quite identical
-        const lead = 1 + 0.07 * side * m.dir * Math.min(1, Math.abs(m.vel) * 5);
+        const lead = 1 + 0.1 * side * m.lean;
         const sz = ex.size * lead * (side < 0 ? 1 : 0.94);
         const rx = R * 0.88 * sz, ry = R * 1.12 * sz;
         ctx.save();
@@ -1045,14 +1031,6 @@
       }
       p.pop();
 
-      // direct label beneath the packet (Tufte: label the thing, skip the legend)
-      if (this.o.labels && m.label > 0.01) {
-        const col = p.color(c[m.color]); col.setAlpha(255 * m.label * 0.85);
-        p.noStroke(); p.fill(col);
-        p.textFont(c.family); p.textStyle(p.ITALIC); p.textSize(17); p.textAlign(p.CENTER, p.CENTER);
-        const off = m.amp + 26;
-        p.text(m.name, a.bx - a.nx * off, a.by - a.ny * off);
-      }
       // caption
       if (m.captionA > 0.01 && m.caption) {
         const col = p.color(c.ink); col.setAlpha(255 * m.captionA);

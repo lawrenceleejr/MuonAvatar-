@@ -11,9 +11,9 @@ added to the packet's own carrier wave, so the talking animation comes straight 
 d(s) = g(s) · [ A cos(k s − ω t)  +  G · a_LP(s) ]
 ```
 
-`g` is the Gaussian envelope, `A cos(k s − ω t)` is the packet's high-frequency carrier, and
-`a_LP` is the low-passed voice waveform (two cascaded biquad filters into a Web Audio
-`AnalyserNode`) stretched across the packet. The cutoff and the gain `G` are live settings.
+`g` is the envelope, a Gaussian skewed toward the direction of travel so the packet leans into its motion, `A cos(k s − ω t)` is the packet's high-frequency carrier, and
+`a_LP` is the low-passed voice waveform (two cascaded biquads, run in JS on the decoded clip and
+read at the playhead) stretched across the packet. The cutoff and the gain `G` are live settings.
 
 ## Run
 
@@ -33,7 +33,8 @@ open http://localhost:8000
     voiceBase: 'voices/',   // where manifest.json and the mp3s live
     autoBirth: true,        // play the birth on load (without sound until the visitor clicks)
   });
-  // mu.birth()  mu.wander()  mu.hop()  mu.ride()  mu.collide()  mu.stop()
+  // mu.birth()  mu.wander()  mu.hop()  mu.ride()  mu.collide()  mu.faces()  mu.stop()
+  // mu.emote('happy' | 'surprised' | 'determined' | 'sleepy' | 'sad' | 'smug' | 'dizzy' | 'normal')
   // mu.morph('flat' | 'hills' | 'wave' | 'ring' | 'loop' | 'mu' | 'heart')
   // mu.say('hello')  -- any id from voices/manifest.json
   // mu.set('lowpass', 300); mu.set('speechGain', 1.5)
@@ -44,10 +45,10 @@ The canvas is transparent and fills its container's width (aspect 1000:420). Col
 CSS custom properties on the container, so the mascot picks up your site's palette:
 `--mu-ink`, `--mu-paper` (eye whites), `--mu-minus`, `--mu-plus`, `--mu-font`.
 
-Options for `mount`: `lowpass` (Hz, default 420), `speechGain` (1), `speechWindow` (analyser
-samples across the packet, 1024), `pitch` (voice playback rate, 1), `carrier` (k, 0.19),
-`showEnvelope`, `captions`, `labels`, `autoBirth`, `colors` (an object that overrides the CSS
-properties).
+Options for `mount`: `lowpass` (Hz, default 420), `speechGain` (1), `speechWindow` (ms of
+speech across the packet, 40), `pitch` (voice playback rate, 1), `carrier` (k, 0.19), `wobble`,
+`boilFps` and `inkWeight` (the hand-drawn line), `captions`, `autoBirth`, `background`, `seed`,
+`colors` (an object that overrides the CSS properties).
 
 Browsers only play sound after the visitor interacts with the page, so call `say`, `ride` or
 `collide` from a click. The first click unlocks audio.
